@@ -94,7 +94,7 @@ python3 -m venv venv
 ./venv/bin/python run.py
 ```
 
-Buka `http://localhost:8000`. Data masih simulasi (18 line, 180 mesin) sehingga
+Buka `http://localhost:8010`. Data masih simulasi (18 line, 180 mesin) sehingga
 seluruh tampilan bisa dinilai sebelum kamera dan PLC tersambung.
 
 ---
@@ -118,11 +118,11 @@ sudo systemctl enable --now cctv-dashboard
 ```
 
 Cek: `sudo systemctl status cctv-dashboard` — log: `sudo journalctl -u cctv-dashboard -f`
-Akses dari PC lain: `http://<ip-server>:8000`
+Akses dari PC lain: `http://<ip-server>:8010`
 
 Buka firewall bila perlu:
 ```bash
-sudo firewall-cmd --add-port=8000/tcp --permanent && sudo firewall-cmd --reload
+sudo firewall-cmd --add-port=8010/tcp --permanent && sudo firewall-cmd --reload
 ```
 
 ### Windows
@@ -141,7 +141,7 @@ Semua lewat environment variable.
 | Variable | Default | Keterangan |
 |---|---|---|
 | `CCTV_HOST` | `0.0.0.0` | Alamat bind |
-| `CCTV_PORT` | `8000` | Port HTTP |
+| `CCTV_PORT` | `8010` | Port HTTP |
 | `CCTV_PLANT_NAME` | `Weaving Plant` | Nama pabrik di header |
 | `CCTV_MESIN_PER_LINE` | `10` | Jumlah mesin per line |
 | `CCTV_TARGET_OUTPUT` | `60000` | Target output harian (meter) |
@@ -324,7 +324,7 @@ kamera lain.
 Menghapus dari terminal:
 
 ```bash
-curl -X DELETE http://localhost:8000/api/lines/ajl-01/calibration   # satu kamera
+curl -X DELETE http://localhost:8010/api/lines/ajl-01/calibration   # satu kamera
 rm data/calibration.json                                            # semuanya
 ```
 
@@ -423,7 +423,7 @@ satu waktu — kalau bridge dan worker jalan terpisah, keduanya berebut.
 ```bash
 python3 -m venv venv-ai
 ./venv-ai/bin/pip install -r ai/requirements.txt
-./venv-ai/bin/python ai/webcam_demo.py --dashboard http://127.0.0.1:8000 --line-id ajl-01
+./venv-ai/bin/python ai/webcam_demo.py --dashboard http://127.0.0.1:8010 --line-id ajl-01
 ```
 
 Dashboard di terminal lain:
@@ -529,7 +529,7 @@ mengirim video, bukan menonton. RTSP DESCRIBE akan berhasil, tapi SETUP membalas
 ### Mengirim deteksi dari AI worker
 
 ```bash
-curl -X POST http://localhost:8000/api/alerts \
+curl -X POST http://localhost:8010/api/alerts \
   -H "Content-Type: application/json" \
   -d '{"line_id":"ajl-01","label":"Operator tidak di area","confidence":91,
        "activity":"Tidak ada orang di zona line","object_type":"Person",
@@ -542,7 +542,7 @@ mode `sim` juga, jadi bisa diuji sebelum kamera terpasang.
 ### Mengirim status mesin
 
 ```bash
-curl -X POST http://localhost:8000/api/lines/ajl-01/machines \
+curl -X POST http://localhost:8010/api/lines/ajl-01/machines \
   -H "Content-Type: application/json" \
   -d '{"machines":[{"no":1,"status":"run","color":"green"},
                    {"no":3,"status":"stop","color":"red"}]}'
