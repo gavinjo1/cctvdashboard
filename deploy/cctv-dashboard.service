@@ -1,0 +1,32 @@
+# Systemd service — server pabrik Linux
+# Pasang:
+#   sudo cp deploy/cctv-dashboard.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cctv-dashboard
+# Log:
+#   sudo journalctl -u cctv-dashboard -f
+
+[Unit]
+Description=CCTV Monitoring Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cctv
+Group=cctv
+WorkingDirectory=/opt/cctvdashboard
+Environment="CCTV_HOST=0.0.0.0"
+Environment="CCTV_PORT=8000"
+Environment="CCTV_PLANT_NAME=Weaving Plant"
+Environment="CCTV_SOURCE=sim"
+Environment="CCTV_PUSH_INTERVAL=5"
+# Environment="CCTV_STREAM_BASE=http://192.168.1.50:1984/stream.html?src="
+ExecStart=/opt/cctvdashboard/venv/bin/python run.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

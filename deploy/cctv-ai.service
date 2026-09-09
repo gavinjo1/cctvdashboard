@@ -1,0 +1,25 @@
+# Systemd service untuk AI worker.
+# Boleh dipasang di server yang berbeda dari dashboard (yang punya GPU).
+#
+#   sudo cp deploy/cctv-ai.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now cctv-ai
+#   sudo journalctl -u cctv-ai -f
+
+[Unit]
+Description=CCTV AI Detection Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cctv
+Group=cctv
+WorkingDirectory=/opt/cctvdashboard
+ExecStart=/opt/cctvdashboard/venv-ai/bin/python ai/worker.py --config ai/zones.json
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

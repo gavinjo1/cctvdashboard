@@ -1,0 +1,18 @@
+# Python
+venv/
+venv-ai/
+__pycache__/
+*.pyc
+.env
+
+# Model YOLO (terunduh otomatis)
+yolov8*.pt
+
+# Data runtime
+data/calibration.json
+
+# BERISI PASSWORD KAMERA — jangan pernah di-commit
+ai/zones.json
+ai/zones.generated.json
+deploy/go2rtc.local.yaml
+.DS_Store

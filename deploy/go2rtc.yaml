@@ -1,0 +1,39 @@
+# go2rtc — restreamer RTSP -> browser.
+# Browser tidak bisa membaca RTSP langsung, jadi lapisan ini wajib ada.
+#
+# Pasang (Linux):
+#   wget https://github.com/AlexxIT/go2rtc/releases/latest/download/go2rtc_linux_amd64
+#   chmod +x go2rtc_linux_amd64 && sudo mv go2rtc_linux_amd64 /usr/local/bin/go2rtc
+#   go2rtc -config /opt/cctvdashboard/deploy/go2rtc.yaml
+#
+# PENTING: nama stream HARUS sama dengan line_id di dashboard
+#          (rapier-01, ajl-01, shuttle-01, ...) karena URL dibangun dari id itu.
+
+api:
+  listen: ":1984"
+
+rtsp:
+  listen: ":8554"      # dipakai AI worker untuk menarik stream
+
+streams:
+  # ---- stream utama (halaman detail) + sub-stream (grid) ----
+  # Channel 101 = main stream, 102 = sub stream pada kamera Hikvision/Dahua.
+  rapier-01:
+    - rtsp://admin:password@192.168.1.11:554/Streaming/Channels/101
+  rapier-01-sub:
+    - rtsp://admin:password@192.168.1.11:554/Streaming/Channels/102
+
+  rapier-02:
+    - rtsp://admin:password@192.168.1.12:554/Streaming/Channels/101
+  rapier-02-sub:
+    - rtsp://admin:password@192.168.1.12:554/Streaming/Channels/102
+
+  ajl-01:
+    - rtsp://admin:password@192.168.1.21:554/Streaming/Channels/101
+  ajl-01-sub:
+    - rtsp://admin:password@192.168.1.21:554/Streaming/Channels/102
+
+  # ... lanjutkan untuk 18 line
+
+log:
+  level: info

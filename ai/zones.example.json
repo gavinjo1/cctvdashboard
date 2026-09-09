@@ -1,0 +1,163 @@
+{
+  "_comment": [
+    "Konfigurasi AI worker. Salin jadi zones.json lalu sesuaikan.",
+    "zone: polygon area line di dalam frame kamera, satuan PERSEN (0-100)",
+    "      supaya tidak berubah kalau resolusi kamera diganti.",
+    "machines: ROI lampu tower TIAP MESIN, [x, y, w, h] dalam persen.",
+    "      Satu kamera melihat 10 lampu -> status 10 mesin terbaca sekaligus.",
+    "      Hilangkan kalau kamera tidak melihat lampu tower.",
+    "rtsp: boleh RTSP kamera langsung, atau lewat go2rtc",
+    "      (rtsp://SERVER:8554/NAMA_STREAM)."
+  ],
+  "dashboard_url": "http://127.0.0.1:8000",
+  "defaults": {
+    "fps": 3,
+    "absent_seconds": 120,
+    "crowd_min": 3,
+    "crowd_seconds": 30,
+    "response_seconds": 300,
+    "cooldown_seconds": 600,
+    "min_confidence": 0.45,
+    "status_interval": 10,
+    "lamp_min_ratio": 0.1
+  },
+  "cameras": [
+    {
+      "line_id": "ajl-01",
+      "rtsp": "rtsp://admin:password@192.168.1.21:554/Streaming/Channels/101",
+      "zone": [
+        [
+          8,
+          30
+        ],
+        [
+          92,
+          30
+        ],
+        [
+          92,
+          95
+        ],
+        [
+          8,
+          95
+        ]
+      ],
+      "machines": [
+        {
+          "no": 1,
+          "lamp": [
+            5.38,
+            4.0,
+            6.44,
+            14.0
+          ]
+        },
+        {
+          "no": 2,
+          "lamp": [
+            14.58,
+            4.0,
+            6.44,
+            14.0
+          ]
+        },
+        {
+          "no": 3,
+          "lamp": [
+            23.78,
+            4.0,
+            6.44,
+            14.0
+          ]
+        },
+        {
+          "no": 4,
+          "lamp": [
+            32.98,
+            4.0,
+            6.44,
+            14.0
+          ]
+        },
+        {
+          "no": 5,
+          "lamp": [
+            42.18,
+            4.0,
+            6.44,
+            14.0
+          ]
+        },
+        {
+          "no": 6,
+          "lamp": [
+            51.38,
+            4.0,
+            6.44,
+            14.0
+          ]
+        },
+        {
+          "no": 7,
+          "lamp": [
+            60.58,
+            4.0,
+            6.44,
+            14.0
+          ]
+        },
+        {
+          "no": 8,
+          "lamp": [
+            69.78,
+            4.0,
+            6.44,
+            14.0
+          ]
+        },
+        {
+          "no": 9,
+          "lamp": [
+            78.98,
+            4.0,
+            6.44,
+            14.0
+          ]
+        },
+        {
+          "no": 10,
+          "lamp": [
+            88.18,
+            4.0,
+            6.44,
+            14.0
+          ]
+        }
+      ]
+    },
+    {
+      "line_id": "ajl-02",
+      "rtsp": "rtsp://admin:password@192.168.1.22:554/Streaming/Channels/101",
+      "zone": [
+        [
+          5,
+          25
+        ],
+        [
+          95,
+          25
+        ],
+        [
+          95,
+          95
+        ],
+        [
+          5,
+          95
+        ]
+      ],
+      "machines": []
+    }
+  ]
+}

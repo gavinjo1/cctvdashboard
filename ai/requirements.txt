@@ -1,0 +1,5 @@
+# AI worker — terpisah dari dashboard, boleh dipasang di mesin lain (yang ada GPU)
+ultralytics==8.3.61
+opencv-python-headless==4.11.0.86
+numpy==2.2.1
+requests==2.32.3

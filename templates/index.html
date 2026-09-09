@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CCTV Monitoring — {{ plant }}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1117'/%3E%3Crect x='6' y='9' width='20' height='14' rx='3' fill='none' stroke='%232f81f7' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='3.5' fill='%232ea043'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="{{ url_for('static', path='/css/style.css') }}">
+</head>
+<body>
+
+<div class="app">
+
+<!-- ============ ICON RAIL ============ -->
+<aside class="rail">
+  <div class="rail-logo">CV</div>
+  <nav class="rail-nav">
+    <button class="rail-btn active" data-view="camera" title="Camera">
+      <svg viewBox="0 0 24 24"><path d="M4 7h3l1.5-2h7L17 7h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13" r="3.2"/></svg>
+      <span>Camera</span>
+    </button>
+    <button class="rail-btn" data-view="map" title="Map">
+      <svg viewBox="0 0 24 24"><path d="m9 4-6 2.5v13L9 17l6 2.5 6-2.5V4l-6 2.5L9 4Z"/><path d="M9 4v13"/><path d="M15 6.5v13"/></svg>
+      <span>Map</span>
+    </button>
+    <button class="rail-btn" data-view="analysis" title="Analysis">
+      <svg viewBox="0 0 24 24"><path d="M4 19h16"/><path d="M7 16V9"/><path d="M12 16V5"/><path d="M17 16v-4"/></svg>
+      <span>Analysis</span>
+    </button>
+  </nav>
+  <button class="rail-btn rail-bottom" title="Pengaturan">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z"/></svg>
+    <span>Setting</span>
+  </button>
+</aside>
+
+<div class="main">
+
+<header class="topbar">
+  <div class="brand">
+    <span class="dot-live" id="connDot" title="Menghubungkan..."></span>
+    <h1>CCTV Monitoring <small>{{ plant }}</small></h1>
+  </div>
+  <div class="topbar-right">
+    <div class="search">
+      <input id="search" type="text" placeholder="Cari line / operator / MO...">
+    </div>
+    <button class="bell" id="bell" title="Alert aktif">
+      <svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 1 0-12 0c0 7-2 9-2 9h16s-2-2-2-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+      <span class="bell-badge" id="bellBadge" hidden>0</span>
+    </button>
+    <div class="clock" id="clock">--:--:--</div>
+  </div>
+</header>
+
+<!-- ============ ANALYTICS / MONITORING ============ -->
+<section class="analytics">
+  <div class="kpi">
+    <div class="kpi-label">Total Line</div>
+    <div class="kpi-value" id="kpiLine">0</div>
+    <div class="kpi-sub" id="kpiLineSub">&nbsp;</div>
+  </div>
+  <div class="kpi ok">
+    <div class="kpi-label">Line Running</div>
+    <div class="kpi-value" id="kpiRun">0</div>
+    <div class="kpi-sub" id="kpiRunPct">0% line aktif</div>
+  </div>
+  <div class="kpi warn">
+    <div class="kpi-label">Idle / Setting</div>
+    <div class="kpi-value" id="kpiIdle">0</div>
+    <div class="kpi-sub">menunggu operator</div>
+  </div>
+  <div class="kpi bad">
+    <div class="kpi-label">Stop / Alarm</div>
+    <div class="kpi-value" id="kpiStop">0</div>
+    <div class="kpi-sub">perlu tindakan</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Mesin Jalan</div>
+    <div class="kpi-value" id="kpiMesin">0</div>
+    <div class="bar"><span id="mesinBar" style="width:0%"></span></div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Efisiensi Rata-rata</div>
+    <div class="kpi-value" id="kpiEff">0%</div>
+    <div class="bar"><span id="effBar" style="width:0%"></span></div>
+  </div>
+  <div class="kpi wide">
+    <div class="kpi-label">Output Hari Ini</div>
+    <div class="kpi-value" id="kpiOut">0<small> m</small></div>
+    <div class="kpi-sub" id="kpiOutTrend">target {{ "{:,}".format(target_output).replace(",", ".") }} m</div>
+  </div>
+</section>
+
+<!-- ============ MAIN ============ -->
+<div class="layout">
+
+  <!-- SIDEBAR: dropbar jenis mesin (tampil di view Camera & Analysis) -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">Jenis Mesin</div>
+    <nav id="tree"></nav>
+
+    <div class="legend">
+      <div class="legend-title">Status</div>
+      <span><i class="s-run"></i> Running</span>
+      <span><i class="s-idle"></i> Idle / Setting</span>
+      <span><i class="s-stop"></i> Stop / Alarm</span>
+      <span><i class="s-off"></i> Offline</span>
+    </div>
+    <div class="legend">
+      <div class="legend-title">Keterangan</div>
+      <span>1 kamera = 1 line = {{ mesin_per_line }} mesin</span>
+      <span>1 line dihandle 1 operator</span>
+    </div>
+  </aside>
+
+  <main class="content">
+
+    <!-- ---------- VIEW: CAMERA (grid) ---------- -->
+    <section class="view" id="viewCamera">
+      <div class="content-head">
+        <h2 id="viewTitle">Semua Line</h2>
+        <span class="count" id="viewCount"></span>
+        <div class="view-actions">
+          <button class="btn active" data-filter="all">Semua</button>
+          <button class="btn" data-filter="run">Running</button>
+          <button class="btn" data-filter="stop">Stop</button>
+          <button class="btn" data-filter="alert">Ada Alert</button>
+        </div>
+      </div>
+      <div id="grid" class="grid"></div>
+    </section>
+
+    <!-- ---------- VIEW: DETAIL KAMERA + PANEL ALERT ---------- -->
+    <section class="view" id="viewDetail" hidden>
+      <div class="detail-head">
+        <button class="back" id="detailBack">&#8249;</button>
+        <h2 id="detailTitle">Line</h2>
+        <span class="mcode" id="detailCam"></span>
+        <span class="cal-badge" id="calBadge" hidden></span>
+        <button class="btn" id="calToggle">Kalibrasi</button>
+      </div>
+
+      <!-- panel kalibrasi (muncul saat tombol Kalibrasi ditekan) -->
+      <div class="calbar" id="calBar" hidden>
+        <div class="calbar-row">
+          <span class="calbar-label">Mode</span>
+          <button class="btn on" id="calZone">Zona Line</button>
+          <button class="btn" id="calLamp">Kotak Lampu</button>
+          <span class="sep"></span>
+          <span class="calbar-label" id="calSplitLbl" hidden>Bagi</span>
+          <input type="number" id="calSplitN" value="10" min="2" max="30" hidden>
+          <button class="btn" id="calSplit" hidden>Bagi Rata</button>
+          <span class="sep"></span>
+          <button class="btn" id="calUndo">Batal Terakhir</button>
+          <button class="btn" id="calClear">Bersihkan Gambar</button>
+          <span class="sep"></span>
+          <button class="btn primary" id="calSave">Simpan</button>
+          <button class="btn danger" id="calDelete">Hapus Kalibrasi</button>
+          <span class="cal-msg" id="calMsg"></span>
+        </div>
+        <div class="calbar-hint" id="calHint"></div>
+        <div class="cal-reads" id="calReads"></div>
+      </div>
+      <div class="detail">
+        <div class="detail-main">
+          <div class="cam big" id="detailCam2">
+            <div class="noise"></div>
+            <canvas id="calCanvas" hidden></canvas>
+            <span class="live-badge"><i></i> Live</span>
+            <div class="cam-bar">
+              <span id="detailStamp">--</span>
+            </div>
+          </div>
+          <div class="mo-box">
+            <div class="mo-box-head">
+              <h3>Order MO di Line Ini</h3>
+              <span class="count" id="moCount"></span>
+            </div>
+            <div class="mo-list" id="moList"></div>
+          </div>
+        </div>
+        <aside class="panel" id="alertPanel"></aside>
+      </div>
+    </section>
+
+    <!-- ---------- VIEW: MAP ---------- -->
+    <section class="view" id="viewMap" hidden>
+      <div class="content-head">
+        <h2>Denah Pabrik</h2>
+        <span class="count" id="mapCount"></span>
+        <div class="view-actions map-legend">
+          <span><i class="s-run"></i> Running</span>
+          <span><i class="s-idle"></i> Idle</span>
+          <span><i class="s-stop"></i> Stop</span>
+          <span class="ml"><b>&#9679;</b> = kamera &nbsp; kotak kecil = mesin</span>
+        </div>
+      </div>
+      <div class="map-wrap"><div class="map" id="map"></div></div>
+    </section>
+
+    <!-- ---------- VIEW: ANALYSIS ---------- -->
+    <section class="view" id="viewAnalysis" hidden>
+      <div class="content-head">
+        <h2>Analisa per Mesin</h2>
+        <span class="count" id="anaCount"></span>
+        <div class="view-actions">
+          <button class="btn" id="anaExpand">Buka Semua</button>
+          <button class="btn" id="anaCollapse">Tutup Semua</button>
+        </div>
+      </div>
+      <div id="analysis" class="ana-list"></div>
+    </section>
+
+  </main>
+</div>
+</div><!-- /.main -->
+</div><!-- /.app -->
+
+<script src="{{ url_for('static', path='/js/calibrate.js') }}"></script>
+<script src="{{ url_for('static', path='/js/app.js') }}"></script>
+</body>
+</html>
