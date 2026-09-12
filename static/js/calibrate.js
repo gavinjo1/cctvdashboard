@@ -131,6 +131,49 @@ function calContentRect() {
   return { x: (W - w) / 2, y: (H - h) / 2, w, h };
 }
 
+/* Gambar kalibrasi TERSIMPAN saat tidak sedang mengedit, supaya hasil
+   simpan langsung terlihat di feed tanpa harus membuka mode kalibrasi. */
+function calShowSaved(line) {
+  const c = calCanvas();
+  if (!c || CAL.on) return;
+  const cal = (line && line.cal) || { zone: [], machines: [] };
+  const has = (cal.zone || []).length >= 3 || (cal.machines || []).length;
+  c.hidden = !has;
+  if (!has) return;
+
+  calResize();
+  const ctx = c.getContext("2d");
+  const toPx = (x, y) => [x / 100 * c.width, y / 100 * c.height];
+  ctx.clearRect(0, 0, c.width, c.height);
+
+  if ((cal.zone || []).length >= 3) {
+    ctx.beginPath();
+    cal.zone.forEach(([x, y], i) => {
+      const [px, py] = toPx(x, y);
+      i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+    });
+    ctx.closePath();
+    ctx.strokeStyle = "rgba(63,185,80,.75)";
+    ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  const img = calImg();
+  (cal.machines || []).forEach(m => {
+    const [px, py] = toPx(m.lamp[0], m.lamp[1]);
+    const [pw, ph] = toPx(m.lamp[2], m.lamp[3]);
+    let col = "rgba(47,129,247,.8)";
+    if (img && img.tagName === "IMG") {
+      const rd = readLamp(img, m.lamp);
+      if (rd.color !== "blocked") col = COLOR_HEX[rd.color];
+    }
+    ctx.strokeStyle = col; ctx.lineWidth = 2;
+    ctx.strokeRect(px, py, pw, ph);
+    ctx.fillStyle = col; ctx.font = "600 10px system-ui";
+    ctx.fillText(String(m.no).padStart(2, "0"), px + 2, Math.max(10, py - 3));
+  });
+}
+
 function calDraw() {
   const c = calCanvas();
   if (!c || c.hidden) return;
@@ -197,6 +240,13 @@ function calDraw() {
   calRenderReads(reads);
 }
 
+/* calibrate.js dimuat SEBELUM app.js, jadi tidak bisa memakai esc() di sana. */
+function calEsc(v) {
+  return String(v === null || v === undefined ? "" : v)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 function calRenderReads(reads) {
   const box = document.getElementById("calReads");
   if (!box) return;
@@ -220,8 +270,9 @@ function calRenderReads(reads) {
   reads.forEach(r => { const st = COLOR_STATUS[r.color]; if (st) n[st]++; });
   box.innerHTML =
     `<span class="cal-sum">${n.run} jalan · ${n.idle} setting · ${n.stop} stop · ${n.off} mati</span>` +
-    reads.map(r => `<span class="cal-rd ${r.color}">${String(r.no).padStart(2, "0")}
-      ${r.color === "blocked" ? "?" : r.color} ${r.color === "blocked" ? "" : (r.ratio * 100).toFixed(0) + "%"}</span>`).join("");
+    reads.map(r => `<span class="cal-rd ${calEsc(r.color)}">${String(r.no).padStart(2, "0")}
+      ${r.color === "blocked" ? "?" : calEsc(r.color)} ${
+        r.color === "blocked" ? "" : (Number(r.ratio) * 100).toFixed(0) + "%"}</span>`).join("");
 }
 
 /* ---------- interaksi mouse ---------- */
@@ -316,10 +367,20 @@ function calOpen(line) {
 function calClose() {
   CAL.on = false;
   CAL.drag = null;
-  document.getElementById("calBar").hidden = true;
+  const bar = document.getElementById("calBar");
+  if (bar) bar.hidden = true;
   const c = calCanvas();
-  if (c) { c.hidden = true; c.getContext("2d").clearRect(0, 0, c.width, c.height); }
-  document.getElementById("calToggle").classList.remove("on");
+  if (c) {
+    c.style.cursor = "default";
+    c.getContext("2d").clearRect(0, 0, c.width, c.height);
+    c.hidden = true;
+  }
+  const t = document.getElementById("calToggle");
+  if (t) t.classList.remove("on");
+  // langsung tampilkan kembali kalibrasi tersimpan
+  if (typeof detailLine !== "undefined" && typeof byId === "function") {
+    calShowSaved(byId(detailLine));
+  }
 }
 
 function calMsg(text, ok) {
@@ -349,6 +410,9 @@ async function calSave() {
       calMsg(e.detail || `Gagal (${r.status})`, false);
       return;
     }
+    const line = byId(CAL.lineId);
+    if (line) line.cal = { zone: body.zone, machines: body.machines };
+    if (typeof renderDetail === "function") renderDetail();
     calMsg(`Tersimpan — ${body.zone.length} titik zona, ${body.machines.length} lampu`, true);
   } catch (e) {
     calMsg("Gagal menghubungi server", false);
@@ -379,16 +443,24 @@ function calBindControls() {
   document.getElementById("calDelete").onclick = async () => {
     const line = byId(CAL.lineId);
     const nama = line ? line.name : CAL.lineId;
-    if (!confirm(`Hapus kalibrasi tersimpan untuk ${nama}?\n\n` +
-                 `Kamera lain tidak terpengaruh. AI worker akan kembali ` +
-                 `memakai zones.json untuk kamera ini.`)) return;
+    // dlgConfirm ada di app.js, yang dimuat setelah berkas ini — saat
+    // penangan klik ini berjalan, keduanya sudah siap.
+    const ya = await dlgConfirm(
+      `Hapus kalibrasi ${nama}?`,
+      "Zona dan semua kotak lampu kamera ini hilang, dan harus digambar " +
+      "ulang dari nol. Kamera lain tidak terpengaruh; AI worker kembali " +
+      "memakai zones.json untuk kamera ini.",
+      "Hapus kalibrasi");
+    if (!ya) return;
     try {
       const r = await fetch(`/api/lines/${CAL.lineId}/calibration`,
                             { method: "DELETE" });
       if (r.status === 404) { calMsg("Kamera ini memang belum dikalibrasi", false); return; }
       if (!r.ok) { calMsg(`Gagal (${r.status})`, false); return; }
       CAL.zone = []; CAL.lamps = [];
+      if (line) line.cal = { zone: [], machines: [] };
       calDraw();
+      if (typeof renderDetail === "function") renderDetail();
       calMsg(`Kalibrasi ${nama} dihapus`, true);
     } catch (e) {
       calMsg("Gagal menghubungi server", false);
@@ -412,5 +484,11 @@ function calBindControls() {
 }
 
 /* gambar ulang mengikuti frame kamera yang menyegar tiap detik */
-setInterval(() => { if (CAL.on) calDraw(); }, 1000);
-window.addEventListener("resize", () => { if (CAL.on) calDraw(); });
+setInterval(() => {
+  if (CAL.on) calDraw();
+  else if (typeof view !== "undefined" && view === "detail") calShowSaved(byId(detailLine));
+}, 1000);
+window.addEventListener("resize", () => {
+  if (CAL.on) calDraw();
+  else if (typeof view !== "undefined" && view === "detail") calShowSaved(byId(detailLine));
+});

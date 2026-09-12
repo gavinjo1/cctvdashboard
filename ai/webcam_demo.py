@@ -35,9 +35,12 @@ import requests
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lamp import draw_lamps, read_all as read_lamps
+from lamp import draw_lamps, buat_pembaca, read_tower
 
 log = logging.getLogger("webcam")
+
+#: urut ATAS -> BAWAH, sama dengan ai/lamp.py
+INDIKATOR_DEMO = ["mesin_stop", "putus_pakan", "putus_lusi", "setup"]
 
 # ---------------------------------------------------------------- state
 class Shared:
@@ -123,6 +126,10 @@ class Capture(threading.Thread):
         self.last_alert = {}
         self.last_cal_fetch = 0.0
         self.cal_version = None
+        self._pembaca = None
+
+    def _headers(self):
+        return {"X-API-Key": self.a.api_key} if self.a.api_key else {}
 
     # ---------- kalibrasi dari dashboard ----------
     def refresh_calibration(self):
@@ -160,6 +167,7 @@ class Capture(threading.Thread):
         if len(zone) >= 3:
             self.a.zone = [tuple(p) for p in zone]
         self.a.lamps = lamps
+        self._pembaca = None             # kotak berubah -> bangun ulang pembaca
         with shared.lock:
             shared.lamps = []                # hasil lama tidak berlaku lagi
             shared.counts = {"run": 0, "idle": 0, "stop": 0, "off": 0}
@@ -183,23 +191,30 @@ class Capture(threading.Thread):
         }
         try:
             r = requests.post(self.a.dashboard.rstrip("/") + "/api/alerts",
-                              json=payload, timeout=5)
+                              json=payload, headers=self._headers(), timeout=5)
             log.info("ALERT -> %s : %s (%ds)  [%s]",
                      self.a.line_id, label, duration, r.status_code)
         except requests.RequestException as e:
             log.warning("gagal kirim alert: %s", e)
 
     def push_machine_status(self, results):
+        """Kirim status mesin ke dasbor.
+
+        Interval ini menentukan ketepatan waktu pada catatan episode:
+        perubahan warna baru tercatat pada kiriman berikutnya. Untuk
+        pengumpulan data uji, turunkan dengan --status-interval 1.
+        """
         now = time.time()
-        if now - getattr(self, "_last_push", 0) < 5:
+        if now - getattr(self, "_last_push", 0) < self.a.status_interval:
             return
         self._last_push = now
         body = {"machines": [{"no": r["no"], "status": r["status"],
-                              "color": r["color"]} for r in results]}
+                              "indikator": r["indikator"],
+                              "kedip": r["kedip"]} for r in results]}
         try:
             requests.post(self.a.dashboard.rstrip("/") +
                           "/api/lines/%s/machines" % self.a.line_id,
-                          json=body, timeout=5)
+                          json=body, headers=self._headers(), timeout=5)
         except requests.RequestException as e:
             log.warning("gagal kirim status mesin: %s", e)
 
@@ -253,12 +268,14 @@ class Capture(threading.Thread):
 
             self.check_black(frame)
 
+            # ambil kalibrasi terbaru SEBELUM zona dihitung, supaya
+            # perubahan dari dashboard langsung berlaku di frame ini
+            self.refresh_calibration()
+
             h, w = frame.shape[:2]
             zone = np.array([[int(x / 100 * w), int(y / 100 * h)]
                              for x, y in self.a.zone], np.int32)
             lamps_cfg = self.a.lamps
-
-            self.refresh_calibration()
 
             now = time.time()
             if now - last >= interval:          # deteksi hanya N fps
@@ -271,7 +288,11 @@ class Capture(threading.Thread):
                         n_in += 1
                 lamp_res = []
                 if lamps_cfg:
-                    lamp_res, counts = read_lamps(frame, lamps_cfg)
+                    if self._pembaca is None:
+                        self._pembaca = buat_pembaca(lamps_cfg, INDIKATOR_DEMO)
+                        for pb in self._pembaca:
+                            pb.rekam_baseline(frame)
+                    lamp_res, counts = read_tower(frame, self._pembaca, now)
                     with shared.lock:
                         shared.lamps = lamp_res
                         shared.counts = counts
@@ -409,7 +430,7 @@ class Handler(BaseHTTPRequestHandler):
                                    "fps": round(shared.fps, 1),
                                    "detector": shared.detector,
                                    "machines": shared.counts,
-                                   "lamps": [{"no": l["no"], "color": l["color"],
+                                   "lamps": [{"no": l["no"], "status": l["status"],
                                               "status": l["status"]}
                                              for l in shared.lamps],
                                    "ready": shared.jpeg is not None}).encode()
@@ -447,10 +468,16 @@ def main():
     p.add_argument("--probe", action="store_true",
                    help="cek sumber lalu keluar: resolusi, kecerahan, deteksi")
     p.add_argument("--dashboard", default="http://127.0.0.1:8000")
+    p.add_argument("--api-key", default="",
+                   help="samakan dengan CCTV_API_KEY di dashboard")
     p.add_argument("--line-id", default="ajl-01",
                    help="line yang dipakai untuk mengirim alert")
     p.add_argument("--detector", choices=["yolo", "hog"], default="yolo")
     p.add_argument("--fps", type=int, default=4, help="fps deteksi")
+    p.add_argument("--status-interval", type=float, default=5.0,
+                   help="jeda kirim status mesin ke dasbor, detik. "
+                        "Menentukan ketepatan waktu catatan episode; "
+                        "pakai 1 saat mengumpulkan data uji")
     p.add_argument("--quality", type=int, default=70, help="kualitas JPEG")
     p.add_argument("--absent", type=int, default=15,
                    help="detik tanpa orang sebelum alert (demo: kecil)")
@@ -463,6 +490,12 @@ def main():
     p.add_argument("--lamp-grid", type=int, default=0,
                    help="buat N ROI lampu otomatis berderet di bagian atas frame "
                         "(cara cepat menguji: --lamp-grid 10)")
+    p.add_argument("--lamp-min-ratio", type=float, default=0.10,
+                   help="proporsi piksel berwarna agar lampu dianggap MENYALA "
+                        "(0-1). Inilah ambang yang disetel di lapangan: naikkan "
+                        "kalau lampu padam terbaca menyala, turunkan kalau lampu "
+                        "menyala terbaca padam. Nilai yang cocok disalin ke "
+                        "lamp_min_ratio di ai/zones.json")
     p.add_argument("--zone", default="10,25,90,25,90,95,10,95",
                    help="polygon zona dalam persen: x1,y1,x2,y2,...")
     args = p.parse_args()

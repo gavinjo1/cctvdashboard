@@ -3,7 +3,7 @@ REM Server pabrik Windows. Taruh file ini di folder aplikasi.
 cd /d "%~dp0.."
 
 set CCTV_HOST=0.0.0.0
-set CCTV_PORT=8000
+set CCTV_PORT=8010
 set CCTV_PLANT_NAME=Weaving Plant
 set CCTV_SOURCE=sim
 set CCTV_PUSH_INTERVAL=5

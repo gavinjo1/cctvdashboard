@@ -19,9 +19,39 @@ WorkingDirectory=/opt/cctvdashboard
 Environment="CCTV_HOST=0.0.0.0"
 Environment="CCTV_PORT=8000"
 Environment="CCTV_PLANT_NAME=Weaving Plant"
-Environment="CCTV_SOURCE=sim"
 Environment="CCTV_PUSH_INTERVAL=5"
-# Environment="CCTV_STREAM_BASE=http://192.168.1.50:1984/stream.html?src="
+
+# --- WAJIB DIISI SEBELUM PRODUKSI (lihat PRODUCTION.md) ---
+Environment="CCTV_SOURCE=sim"
+#
+# KUNCI API. Buat token acak:
+#     python -c "import secrets;print(secrets.token_urlsafe(32))"
+# lalu isi di BAWAH ini, dan salin nilai yang sama ke "api_key" di
+# ai/zones.json. Biarkan kosong hanya selama uji coba — dashboard akan
+# memperingatkan saat start dan di /healthz.
+#
+# JANGAN diisi "false" atau "off" untuk mematikannya: nilai itu menjadi
+# KUNCI yang sebenarnya — mudah ditebak, sekaligus membuat pemeriksaan
+# kesiapan mengira kunci sudah diisi. Untuk mematikan, kosongkan saja.
+Environment="CCTV_API_KEY="
+Environment="CCTV_STREAM_URL=http://192.168.1.50:1984/api/stream.mp4?src={id}"
+Environment="CCTV_STREAM_URL_GRID=http://192.168.1.50:1984/api/stream.mp4?src={id}-sub"
+Environment="CCTV_STREAM_MODE=video"
+
+# --- shift & reset penghitung ---
+Environment="CCTV_SHIFT_STARTS=06:00,14:00,22:00"
+Environment="CCTV_SHIFT_NAMES=Shift 1,Shift 2,Shift 3"
+Environment="CCTV_RESET_MODE=shift"
+Environment="CCTV_TIMEZONE=Asia/Jakarta"
+
+# --- produksi ---
+Environment="CCTV_TARGET_OUTPUT=60000"
+Environment="CCTV_MESIN_PER_LINE=10"
+
+# --- penyimpanan (WAJIB ikut backup) ---
+Environment="CCTV_DB_FILE=/opt/cctvdashboard/data/history.db"
+Environment="CCTV_CALIBRATION_FILE=/opt/cctvdashboard/data/calibration.json"
+Environment="CCTV_HISTORY_RETENTION_DAYS=180"
 ExecStart=/opt/cctvdashboard/venv/bin/python run.py
 Restart=always
 RestartSec=5

@@ -302,6 +302,11 @@ langsung di atas feed kamera, tekan **Simpan**.
    membedakan dengan menebak angka: hasilnya terverifikasi seketika.
 4. **Simpan** → tersimpan ke `data/calibration.json`.
 
+Setelah disimpan, zona dan kotak lampu **tetap tergambar di feed** meski mode
+kalibrasi ditutup (garis putus-putus hijau untuk zona, kotak berwarna sesuai
+lampu yang terbaca). Jadi hasil edit selalu terlihat tanpa harus membuka
+mode kalibrasi lagi.
+
 Tiga tombol yang mudah tertukar:
 
 | Tombol | Yang terjadi |
@@ -455,6 +460,8 @@ Berguna kalau punya rekaman CCTV lama dari pabrik:
 |---|---|---|
 | `--device` | `1` | Index webcam |
 | `--source` | *(webcam)* | URL RTSP/HTTP atau path file video |
+| `--no-dashboard-calibration` | — | Abaikan kalibrasi dashboard, pakai `--zone`/`--lamp` |
+| `--no-overlay` | — | Jangan gambar zona/kotak ke frame (dashboard yang menggambar) |
 | `--loop` | — | Ulangi dari awal kalau sumbernya file video |
 | `--detector` | `yolo` | `hog` = detektor bawaan OpenCV, tanpa unduh model |
 | `--zone` | tengah frame | Polygon zona dalam persen: `x1,y1,x2,y2,...` |
@@ -547,6 +554,96 @@ curl -X POST http://localhost:8000/api/lines/ajl-01/machines \
   -d '{"machines":[{"no":1,"status":"run","color":"green"},
                    {"no":3,"status":"stop","color":"red"}]}'
 ```
+
+---
+
+## Laporan shift
+
+Buka view **Analysis** → tab **Laporan Shift**. Pilih shift dari dropdown;
+shift yang sedang berjalan ikut tersedia dengan angka sementara. Tombol
+**Cetak** menghasilkan halaman siap tanda tangan.
+
+### Kenapa efisiensi tidak boleh diambil dari cuplikan terakhir
+
+`output` dan `stops` bersifat akumulatif — nilai akhir periode sudah benar.
+`eff`, `rpm`, dan `status` tidak: ketiganya keadaan sesaat. Mengambil
+cuplikan terakhir berarti melaporkan keadaan pada detik shift berakhir.
+Satu mesin yang berhenti lima menit sebelum pergantian akan tercatat 0%
+untuk seluruh shift.
+
+Karena itu `app/report.py` mengumpulkan nilai sesaat sepanjang periode
+dengan pembobotan waktu, lalu menulis satu baris ringkasan per mesin saat
+periode berakhir — 180 baris per shift, bukan 51.840.
+
+Laporan memuat tiga angka efisiensi yang berbeda arti:
+
+| Kolom | Arti | Kegunaan |
+|---|---|---|
+| **Efisiensi** | Rata-rata sepanjang shift, mesin berhenti dihitung 0% | Gambaran produksi sebenarnya |
+| **Saat Jalan** | Rata-rata hanya selama mesin beroperasi | Performa mesin itu sendiri |
+| **Availability** | Porsi waktu mesin beroperasi | Memisahkan masalah mesin dari masalah penjadwalan |
+
+Mesin dengan **Saat Jalan** tinggi tetapi **Availability** rendah berarti
+mesinnya sehat tetapi terlalu sering menganggur — masalahnya bukan di mesin.
+
+### Cakupan data
+
+Laporan hanya mencakup waktu dashboard benar-benar berjalan. Bila dashboard
+dinyalakan di tengah shift atau sempat mati, laporan menampilkan peringatan
+beserta persentase cakupannya. Output dan jumlah stop tetap benar karena
+akumulatif; efisiensi dan availability hanya menggambarkan periode terekam.
+
+---
+
+## Pengumpulan data uji
+
+Setiap perubahan warna lampu dicatat sebagai **episode** — kapan mulai,
+kapan selesai, berapa lama — bukan cuplikan per detik. Kamera membaca warna
+beberapa kali per detik; mencatat tiap pembacaan menghasilkan ratusan ribu
+baris per hari yang tidak bisa dibaca. Yang berguna untuk pengujian adalah
+kapan warna **berubah**.
+
+### Mengunduh
+
+Buka kartu kamera → tombol **Unduh Log** di kanan atas. Berkas `.txt` berisi
+tiga bagian: urut waktu, dikelompokkan per mesin, dan episode yang masih
+berjalan saat berkas dibuat.
+
+```
+MESIN 01   2 episode   nyala 3d  mati 4d
+   nyala    jam 08:54:30 - 08:54:33   (3d)
+   mati     jam 08:54:33 - 08:54:37   (4d)
+```
+
+Lewat terminal:
+
+```bash
+curl -O -J http://localhost:8000/api/log/ajl-01.txt          # seluruh catatan
+curl -O -J "http://localhost:8000/api/log/ajl-01.txt?hours=8" # 8 jam terakhir
+```
+
+Tombol **Reset Log** mengosongkan catatan satu line untuk memulai sesi
+pengujian baru. Line lain tidak terpengaruh.
+
+### Ketepatan waktu
+
+Jam pada catatan setepat **interval kiriman status**, bukan setepat frame.
+Perubahan warna baru tercatat pada kiriman berikutnya ke dasbor:
+
+| Pengirim | Bawaan | Untuk pengujian |
+|---|---|---|
+| `ai/webcam_demo.py` | 5 detik | `--status-interval 1` |
+| `ai/worker.py` | 10 detik | `status_interval` di `zones.json` |
+
+### Pengaturan
+
+| Variable | Bawaan | Arti |
+|---|---|---|
+| `CCTV_EVENT_LOG` | `vision` | `vision` = hanya dari kamera, `all` = termasuk simulasi, `off` = mati |
+| `CCTV_EVENT_MIN_SECONDS` | `3` | Episode lebih pendek dari ini diabaikan |
+
+Ambang minimum itu perlu: lampu tower bisa berkedip sesaat, dan tanpa
+penyaringan berkas log akan penuh kejadian yang tidak berarti.
 
 ---
 

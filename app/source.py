@@ -12,22 +12,28 @@ from typing import Dict, List, Optional
 from .config import settings
 from .models import Alert, Camera, Group, Hall, Line, Machine, Position
 
-OPERATORS = [
-    "Sutrisno", "Wahyudi", "Rina M.", "Budi S.", "Aris P.", "Nurul H.",
-    "Dedi K.", "Slamet R.", "Yuni A.", "Ahmad F.", "Tari W.", "Joko L.",
-]
-SHIFTS = ["Shift 1", "Shift 2", "Shift 3"]
+# Nama operator TIDAK dikarang di sini. Di mode simulasi kolomnya dibiarkan
+# kosong; di produksi diisi dari roster/absensi lewat LiveSource.bootstrap().
+# Nama karangan di layar lantai produksi mustahil dibedakan dari nama asli.
+
+# Nama shift diambil dari ShiftSchedule (app/shifts.py), bukan dari sini.
+SHIFTS = list(settings.SHIFT_NAMES)
 
 STATUS_POOL = ["run", "run", "run", "run", "idle", "stop"]
 
-# jumlah line per jenis mesin + hall tempatnya
+# TODO(pabrik): jumlah line per jenis mesin HARUS disamakan dengan pabrik.
+# Format: (kode, label, jumlah_line, hall). Kode dipakai sebagai awalan
+# line_id ("ajl-01") dan HARUS sama dengan nama stream di go2rtc.
 LAYOUT = [
     ("rapier", "Rapier", 6, "hall-a"),
     ("ajl", "AJL", 9, "hall-b"),
     ("shuttle", "Shuttle", 3, "hall-c"),
 ]
 
-# denah pabrik — posisi dalam persen (0-100)
+# TODO(pabrik): denah ini KARANGAN. Ukur tata letak asli lalu sesuaikan
+# x/y/w/h (persen dari luas denah). Posisi tiap line dihitung otomatis
+# oleh _grid_pos(); kalau susunan aslinya tidak berupa grid rapi, isi
+# `pos` tiap line secara manual di LiveSource.bootstrap().
 HALLS = [
     Hall(key="hall-a", label="Hall A — Rapier", x=4, y=8, w=44, h=40),
     Hall(key="hall-b", label="Hall B — AJL", x=53, y=8, w=43, h=84),
@@ -35,14 +41,36 @@ HALLS = [
 ]
 HALL_BY_KEY = {h.key: h for h in HALLS}
 
-# jenis deteksi AI yang relevan di lantai produksi
-DETECTIONS = [
-    ("Operator tidak di area", "Operator meninggalkan line", "Person", "high"),
-    ("Mesin stop tanpa penanganan", "Lampu alarm menyala > 5 menit", "Machine", "high"),
-    ("Orang tidak dikenal", "Orang tanpa seragam di area line", "Person", "high"),
-    ("APD tidak lengkap", "Operator tanpa masker / penutup kepala", "Person", "med"),
-    ("Kerumunan di line", "3 orang atau lebih berkumpul", "Person", "med"),
-]
+# Simulator TIDAK LAGI mengarang alert. Satu-satunya sumber alert adalah
+# AI worker lewat POST /api/alerts.
+#
+# Alasannya bukan sekadar kerapian tampilan: tiap alert yang muncul juga
+# ditulis ke tabel `alerts` di data/history.db, lengkap dengan waktu tanggap
+# dan siapa yang menutupnya. Alert karangan mencemari jejak audit dan membuat
+# statistik false-alarm serta rata-rata waktu tanggap dihitung dari kejadian
+# yang tidak pernah terjadi — dan setelah tercampur, tidak ada cara
+# membedakannya dari alert sungguhan.
+
+
+def _teks(v, maks: int) -> str:
+    """Teks dari payload luar: dipotong, tanpa baris baru & karakter kendali.
+
+    Panjangnya dibatasi karena nilai ini ikut disiarkan ke semua browser
+    pada setiap snapshot, dan disimpan ke basis data jejak audit.
+    """
+    if v is None:
+        return ""
+    s = str(v)[:maks]
+    return "".join(c for c in s if c == " " or c.isprintable()).strip()
+
+
+def _angka(v, low: int, high: int) -> int:
+    """Bilangan bulat dari payload luar, dijepit ke rentang yang masuk akal."""
+    try:
+        n = int(float(v))
+    except (TypeError, ValueError):
+        return low
+    return max(low, min(high, n))
 
 
 def _stream_url(line_id: str, grid: bool = False) -> str:
@@ -123,10 +151,83 @@ class BaseSource:
         self.groups: List[Group] = []
         self.halls: List[Hall] = HALLS
         self._vision_until: Dict[str, float] = {}
+        self.period_key: str = ""        # diisi oleh app/main.py saat startup
+
+    # ---------- reset per shift / per hari ----------
+    def reset_counters(self, period_key: str) -> None:
+        """Nolkan penghitung produksi saat periode berganti.
+
+        `output` dan `stops` bersifat per-periode. Tanpa ini angkanya
+        menumpuk selamanya dan "Output Hari Ini" jadi tidak masuk akal.
+        Nilai sebelum reset sudah tersimpan di database histori.
+        """
+        for line in self.all_lines():
+            line.output = 0
+            line.stops = 0
+            for m in line.machines:
+                m.output = 0
+                m.stops = 0
+                m.downtime = 0
+            rollup(line)
+        self.period_key = period_key
+
+    def apply_shift(self, shift_name: str) -> None:
+        """Perbarui nama shift di semua line."""
+        for line in self.all_lines():
+            line.shift = shift_name
+
+    def export_counters(self) -> dict:
+        """Penghitung berjalan, untuk disimpan supaya tahan restart."""
+        return {
+            "period_key": self.period_key,
+            "lines": {
+                l.id: {
+                    "output": l.output,
+                    "stops": l.stops,
+                    "machines": {str(m.no): {"output": m.output,
+                                             "stops": m.stops,
+                                             "downtime": m.downtime}
+                                 for m in l.machines},
+                } for l in self.all_lines()
+            },
+        }
+
+    def import_counters(self, data: dict) -> int:
+        """Kembalikan penghitung setelah restart. Return jumlah line dipulihkan."""
+        lines = (data or {}).get("lines") or {}
+        n = 0
+        for line in self.all_lines():
+            saved = lines.get(line.id)
+            if not saved:
+                continue
+            line.output = int(saved.get("output", 0))
+            line.stops = int(saved.get("stops", 0))
+            for m in line.machines:
+                sm = (saved.get("machines") or {}).get(str(m.no))
+                if sm:
+                    m.output = int(sm.get("output", 0))
+                    m.stops = int(sm.get("stops", 0))
+                    m.downtime = int(sm.get("downtime", 0))
+            rollup(line)
+            n += 1
+        self.period_key = (data or {}).get("period_key", self.period_key)
+        return n
 
     def vision_active(self, line_id: str) -> bool:
         """True kalau line ini sedang disuplai data asli dari AI worker."""
         return self._vision_until.get(line_id, 0) > time.time()
+
+    def vision_age(self, line_id: str) -> Optional[int]:
+        """Detik sejak data kamera terakhir. None = belum pernah menerima.
+
+        Dipakai dashboard untuk membedakan "AI tidak menemukan apa-apa" dari
+        "AI sudah berhenti mengirim". Keduanya terlihat sama di layar, tetapi
+        yang kedua berarti line ini tidak terpantau sama sekali.
+        """
+        until = self._vision_until.get(line_id)
+        if not until:
+            return None
+        return max(0, int(time.time() - (until - self.VISION_LEASE)))
 
     def bootstrap(self) -> None:
         raise NotImplementedError
@@ -152,30 +253,39 @@ class BaseSource:
 
         Berlaku di mode sim maupun live, supaya AI worker bisa diuji
         sebelum adapter data pabrik selesai dibuat.
+
+        Isi payload TIDAK dipercaya. Alert disiarkan ke layar setiap
+        operator tiap beberapa detik, jadi nilai yang cacat di sini tidak
+        berhenti di satu permintaan: teks sepanjang berpuluh megabyte akan
+        dikirim berulang ke semua browser, dan angka yang bukan bilangan
+        akan menjatuhkan endpoint-nya.
         """
         line = self.get_line(line_id)
         if line is None:
             return False
         now = datetime.now().strftime("%H:%M:%S")
-        alert_id = payload.get("id") or "ALR-{}-{}".format(
+        alert_id = _teks(payload.get("id"), 64) or "ALR-{}-{}".format(
             line_id, datetime.now().strftime("%H%M%S"))
+        severity = payload.get("severity")
         line.alert = Alert(
             id=alert_id,
             line_id=line_id,
-            label=payload["label"],
-            confidence=int(payload.get("confidence", 0)),
-            zone=payload.get("zone", line.name),
-            activity=payload.get("activity", ""),
-            object_type=payload.get("object_type", "Person"),
-            duration=int(payload.get("duration", 0)),
-            detected_at=payload.get("detected_at") or now,
-            severity=payload.get("severity", "high"),
-            snapshots=payload.get("snapshots") or [now],
+            label=_teks(payload.get("label"), 120) or "Deteksi",
+            confidence=_angka(payload.get("confidence"), 0, 100),
+            zone=_teks(payload.get("zone"), 80) or line.name,
+            activity=_teks(payload.get("activity"), 200),
+            object_type=_teks(payload.get("object_type"), 40) or "Person",
+            duration=_angka(payload.get("duration"), 0, 86400),
+            detected_at=_teks(payload.get("detected_at"), 32) or now,
+            # hanya dua nilai yang dikenali tampilan; apa pun selain "med"
+            # diperlakukan sebagai "high" supaya tidak ada alert yang
+            # kehilangan penandaan gara-gara salah ketik
+            severity="med" if severity == "med" else "high",
+            snapshots=[_teks(t, 32) for t in
+                       (payload.get("snapshots") or [now])[:12]],
         )
-        # alert dari AI tidak kedaluwarsa sendiri — hanya ditutup operator
-        ttl = getattr(self, "_alert_ttl", None)
-        if ttl is not None:
-            ttl.pop(alert_id, None)
+        # Alert tidak kedaluwarsa sendiri — hanya ditutup operator, supaya
+        # selalu ada jejak siapa yang menanganinya.
         return True
 
     def apply_machine_status(self, line_id: str, machines: List[Dict]) -> int:
@@ -217,7 +327,6 @@ class BaseSource:
         """action: 'accept' (ditindaklanjuti) atau 'false' (false alarm)."""
         for line in self.all_lines():
             if line.alert and line.alert.id == alert_id:
-                getattr(self, "_alert_ttl", {}).pop(alert_id, None)
                 line.alert = None
                 return True
         return False
@@ -263,11 +372,6 @@ class BaseSource:
 class SimSource(BaseSource):
     """Data simulasi — dipakai kalau CCTV_SOURCE=sim."""
 
-    def __init__(self):
-        super().__init__()
-        # sisa umur tiap alert (dalam siklus refresh) supaya tidak menumpuk
-        self._alert_ttl: Dict[str, int] = {}
-
     def bootstrap(self) -> None:
         self.groups = []
         for key, label, count, hall_key in LAYOUT:
@@ -281,7 +385,7 @@ class SimSource(BaseSource):
                     name="{} {}".format(key.upper(), num),
                     type=key,
                     status=random.choice(STATUS_POOL),
-                    operator=random.choice(OPERATORS),
+                    operator="",        # tidak dikarang — lihat catatan di atas
                     shift=random.choice(SHIFTS),
                     mesin=settings.MESIN_PER_LINE,
                     stops=random.randint(0, 14),
@@ -351,51 +455,7 @@ class SimSource(BaseSource):
 
     _rollup = staticmethod(rollup)
 
-    def _maybe_alert(self, line: Line) -> None:
-        """Simulasi deteksi AI. Line stop lebih sering memicu alert."""
-        if line.alert:
-            return
-        if not line.cam.online:
-            return
-        chance = 0.06 if line.status == "stop" else 0.012
-        if random.random() > chance:
-            return
-
-        label, activity, obj, severity = random.choice(DETECTIONS)
-        now = datetime.now()
-        stamp = now.strftime("%H:%M:%S")
-        prev = now.replace(second=max(0, now.second - 10)).strftime("%H:%M:%S")
-        line.alert = Alert(
-            id="ALR-{}-{}".format(line.id, now.strftime("%H%M%S")),
-            line_id=line.id,
-            label=label,
-            confidence=random.randint(76, 97),
-            zone=line.name,
-            activity=activity,
-            object_type=obj,
-            duration=random.randint(6, 90),
-            detected_at=stamp,
-            severity=severity,
-            snapshots=[stamp, prev],
-        )
-        self._alert_ttl[line.alert.id] = random.randint(4, 10)
-
-    def _expire_alerts(self) -> None:
-        """Alert hilang sendiri setelah beberapa siklus (anggap sudah ditangani)."""
-        for line in self.all_lines():
-            if not line.alert:
-                continue
-            if line.alert.id not in self._alert_ttl:
-                continue        # alert dari AI worker: biarkan sampai ditutup operator
-            left = self._alert_ttl[line.alert.id] - 1
-            if left <= 0:
-                self._alert_ttl.pop(line.alert.id, None)
-                line.alert = None
-            else:
-                self._alert_ttl[line.alert.id] = left
-
     def refresh(self) -> None:
-        self._expire_alerts()
         for line in self.all_lines():
             if self.vision_active(line.id):
                 continue        # data asli dari AI worker — jangan disimulasi
@@ -408,28 +468,96 @@ class SimSource(BaseSource):
                 else:
                     m.stops += 1 if random.random() < 0.05 else 0
             self._rollup(line)
-            self._maybe_alert(line)
 
 
 class LiveSource(BaseSource):
     """Adapter ke sistem pabrik — dipakai kalau CCTV_SOURCE=live.
 
-    Tiga hal yang perlu diisi:
-      1. bootstrap()  : daftar line + mesin + posisi di denah + info kamera
-      2. refresh()    : nilai runtime tiap mesin (dari PLC / DB loom monitoring)
-      3. push_alert() : dipanggil AI worker saat kamera mendeteksi sesuatu
+    ================================================================
+    TODO(pabrik): INI YANG WAJIB DIISI SEBELUM GO-LIVE.
+    Selama kelas ini kosong, dashboard hanya bisa jalan dengan data
+    simulasi dan SEMUA angka produksinya karangan.
+    ================================================================
+
+    Yang perlu diisi hanya dua method. Struktur data (Line, Machine,
+    Camera, Position) tidak perlu diubah, dan frontend ikut otomatis.
     """
 
     def bootstrap(self) -> None:
-        # TODO: ambil master data line & mesin dari database pabrik.
+        """Dipanggil SEKALI saat startup: bangun daftar line & mesin.
+
+        TODO(pabrik): ganti isi method ini dengan pembacaan master data.
+        Kerangka lengkapnya:
+
+            for row in db.query("SELECT line_id, nama, jenis, hall "
+                                "FROM master_line ORDER BY line_id"):
+                group = self._group(row.jenis)          # rapier/ajl/shuttle
+                line = Line(
+                    id=row.line_id,                     # HARUS sama dengan
+                                                        # nama stream go2rtc
+                    name=row.nama,
+                    type=row.jenis,
+                    area=row.hall,
+                    mesin=row.jumlah_mesin,
+                    cam=Camera(id="CAM-" + row.line_id.upper(),
+                               online=True,             # dari status NVR
+                               stream=_stream_url(row.line_id),
+                               stream_grid=_stream_url(row.line_id, grid=True)),
+                    pos=Position(x=row.denah_x, y=row.denah_y,
+                                 w=row.denah_w, h=row.denah_h),
+                    machines=[Machine(no=m.no, name=m.kode)
+                              for m in db.mesin_of(row.line_id)],
+                )
+                group.lines.append(line)
+
+        Sumber yang umum dipakai: database loom monitoring, tag OPC-UA /
+        Modbus dari PLC, atau REST API vendor mesin.
+        """
         raise NotImplementedError(
-            "LiveSource.bootstrap() belum diisi. "
-            "Set CCTV_SOURCE=sim untuk sementara, atau isi adapter ini."
+            "LiveSource.bootstrap() belum diisi — lihat TODO(pabrik) di "
+            "app/source.py. Set CCTV_SOURCE=sim untuk sementara."
         )
 
     def refresh(self) -> None:
-        # TODO: update status/rpm/eff/output tiap mesin dari sumber real.
+        """Dipanggil tiap CCTV_PUSH_INTERVAL detik: perbarui nilai runtime.
+
+        TODO(pabrik): isi status/rpm/eff/output/stops TIAP MESIN dari
+        sumber real, lalu panggil rollup(line) supaya nilai line ikut.
+
+            for line in self.all_lines():
+                if self.vision_active(line.id):
+                    continue          # status dari kamera, jangan ditimpa
+                for m in line.machines:
+                    d = plc.read(m.name)
+                    m.status = d.status         # run | idle | stop | off
+                    m.rpm    = d.rpm
+                    m.eff    = d.efisiensi
+                    m.output = d.output_periode  # HARUS per-periode, bukan
+                                                 # akumulasi sejak mesin dipasang
+                    m.stops  = d.jumlah_stop
+                    m.order_mo = d.mo           # dari PPIC/ERP
+                rollup(line)
+
+        PENTING soal `output`: nilai yang dikirim harus akumulasi SEJAK
+        AWAL PERIODE (shift/hari), bukan sejak mesin dipasang. Reset
+        periode di dashboard (reset_counters) menolkan penghitungnya —
+        kalau sumber tetap mengirim akumulasi total, angkanya akan
+        melompat kembali setelah reset.
+
+        TODO(pabrik): pastikan juga `cam.online` diperbarui dari status
+        NVR. Kamera mati diam-diam adalah kegagalan paling berbahaya:
+        dashboard terlihat normal padahal buta.
+        """
         raise NotImplementedError
+
+    def _group(self, key: str) -> Group:
+        """Ambil (atau buat) grup untuk jenis mesin tertentu."""
+        for g in self.groups:
+            if g.key == key:
+                return g
+        g = Group(key=key, label=key.upper())
+        self.groups.append(g)
+        return g
 
 
 def build_source() -> BaseSource:

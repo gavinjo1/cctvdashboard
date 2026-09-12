@@ -1,5 +1,22 @@
-# AI worker — terpisah dari dashboard, boleh dipasang di mesin lain (yang ada GPU)
+# AI worker — dipasang terpisah dari dashboard, boleh di mesin lain (yang ada GPU)
+#
+#   python3 -m venv venv-ai
+#   ./venv-ai/bin/pip install -r ai/requirements.txt
+#
+# CATATAN numpy: sengaja TIDAK dipin. Ultralytics membatasi numpy<2.0.0 pada
+# macOS tetapi mengizinkan 2.x pada Linux — memin satu versi membuat berkas
+# ini hanya bisa dipasang di salah satu sistem. Biarkan pip menyelesaikannya.
+#
+# CATATAN opencv: ultralytics ikut menarik opencv-python (versi dengan GUI).
+# Baris headless di bawah tetap diperlukan agar cv2 dapat diimpor pada server
+# tanpa pustaka grafis. Bila di server Linux muncul error "libGL.so.1 not
+# found", pasang pustakanya:
+#     sudo apt install -y libgl1 libglib2.0-0
 ultralytics==8.3.61
 opencv-python-headless==4.11.0.86
-numpy==2.2.1
 requests==2.32.3
+
+# Untuk deployment yang dapat diulang, bekukan hasil pemasangan yang sudah
+# terbukti jalan di server pabrik, lalu pakai berkas itu:
+#     ./venv-ai/bin/pip freeze > ai/requirements.lock.txt
+#     ./venv-ai/bin/pip install -r ai/requirements.lock.txt

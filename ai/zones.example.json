@@ -1,13 +1,13 @@
 {
   "_comment": [
-    "Konfigurasi AI worker. Salin jadi zones.json lalu sesuaikan.",
-    "zone: polygon area line di dalam frame kamera, satuan PERSEN (0-100)",
-    "      supaya tidak berubah kalau resolusi kamera diganti.",
-    "machines: ROI lampu tower TIAP MESIN, [x, y, w, h] dalam persen.",
-    "      Satu kamera melihat 10 lampu -> status 10 mesin terbaca sekaligus.",
-    "      Hilangkan kalau kamera tidak melihat lampu tower.",
-    "rtsp: boleh RTSP kamera langsung, atau lewat go2rtc",
-    "      (rtsp://SERVER:8554/NAMA_STREAM)."
+    "TODO(pabrik): salin jadi zones.json lalu isi dengan kamera sebenarnya.",
+    "rtsp     : URL kamera. BERISI PASSWORD — batasi permission file ini",
+    "           (chmod 600) dan jangan masukkan ke git.",
+    "api_key  : harus sama dengan CCTV_API_KEY di dashboard.",
+    "zone     : polygon area line, satuan PERSEN (0-100). Lebih mudah",
+    "           dikalibrasi lewat tombol Kalibrasi di dashboard.",
+    "machines : ROI lampu tower tiap mesin. Satu kamera melihat 10 lampu",
+    "           -> status 10 mesin terbaca sekaligus."
   ],
   "dashboard_url": "http://127.0.0.1:8000",
   "defaults": {
@@ -19,7 +19,14 @@
     "cooldown_seconds": 600,
     "min_confidence": 0.45,
     "status_interval": 10,
-    "lamp_min_ratio": 0.1
+    "stale_after_seconds": 60,
+    "_todo": "Ambang batas di atas WAJIB disetel sesuai SOP pabrik.",
+    "_stale_after_seconds": [
+      "Kamera yang tidak menghasilkan frame selama ini dilaporkan MACET di log.",
+      "Worker tetap mencoba menyambung ulang sendiri."
+    ],
+    "fps_lampu": 30,
+    "_fps_lampu": "Sinyal menara berupa KEDIP. Pada 3 fps, kedip 3 Hz TIDAK TERDETEKSI sama sekali. Membaca lampu murah (tanpa GPU), jadi biarkan 25-30 fps meski deteksi orang jauh lebih lambat."
   },
   "cameras": [
     {
@@ -46,7 +53,7 @@
       "machines": [
         {
           "no": 1,
-          "lamp": [
+          "tower": [
             5.38,
             4.0,
             6.44,
@@ -55,7 +62,7 @@
         },
         {
           "no": 2,
-          "lamp": [
+          "tower": [
             14.58,
             4.0,
             6.44,
@@ -64,7 +71,7 @@
         },
         {
           "no": 3,
-          "lamp": [
+          "tower": [
             23.78,
             4.0,
             6.44,
@@ -73,7 +80,7 @@
         },
         {
           "no": 4,
-          "lamp": [
+          "tower": [
             32.98,
             4.0,
             6.44,
@@ -82,7 +89,7 @@
         },
         {
           "no": 5,
-          "lamp": [
+          "tower": [
             42.18,
             4.0,
             6.44,
@@ -91,7 +98,7 @@
         },
         {
           "no": 6,
-          "lamp": [
+          "tower": [
             51.38,
             4.0,
             6.44,
@@ -100,7 +107,7 @@
         },
         {
           "no": 7,
-          "lamp": [
+          "tower": [
             60.58,
             4.0,
             6.44,
@@ -109,7 +116,7 @@
         },
         {
           "no": 8,
-          "lamp": [
+          "tower": [
             69.78,
             4.0,
             6.44,
@@ -118,7 +125,7 @@
         },
         {
           "no": 9,
-          "lamp": [
+          "tower": [
             78.98,
             4.0,
             6.44,
@@ -127,7 +134,7 @@
         },
         {
           "no": 10,
-          "lamp": [
+          "tower": [
             88.18,
             4.0,
             6.44,
@@ -159,5 +166,42 @@
       ],
       "machines": []
     }
-  ]
+  ],
+  "api_key": "ISI_SAMA_DENGAN_CCTV_API_KEY",
+  "_menara": [
+    "indikator : URUT DARI ATAS KE BAWAH, sesuai susunan fisik menara.",
+    "            Arti datang dari POSISI, bukan warna.",
+    "            Bawaan mengikuti dokumentasi air-jet loom umum:",
+    "              biru   (atas)  loose weft - sisa benang pakan longgar",
+    "              merah         mesin stop - kerusakan mekanis / pengaman",
+    "              kuning        weft stop  - benang pakan putus",
+    "              hijau  (bawah) mesin jalan / siap",
+    "            TODO(pabrik): PASTIKAN ke bagian perawatan. Menara sering",
+    "            dikonfigurasi ulang per pabrik, dan tertukarnya kuning vs",
+    "            merah membuat putus pakan tercatat sebagai kerusakan mesin.",
+    "",
+    "saat_gelap : status mesin saat TIDAK ADA segmen menyala.",
+    "  'run'  menara hanya menyala kalau ada sesuatu -> semua padam = JALAN",
+    "  'off'  hijau menyala terus saat produksi -> semua padam = mesin mati",
+    "  Salah memilih membuat status semua mesin TERBALIK, dan tetap terlihat",
+    "  masuk akal di layar. Pastikan dengan melihat mesin yang sedang jalan.",
+    "",
+    "tower  : kotak SELURUH tumpukan mika satu mesin, persen [x,y,lebar,tinggi].",
+    "         JANGAN sertakan tutup atas dan kaki hitam di bawahnya — kalau",
+    "         ikut terkotak, semua batas segmen bergeser dan keempat",
+    "         pembacaan salah dengan cara yang tetap terlihat wajar."
+  ],
+  "indikator": [
+    "loose_weft",
+    "mesin_stop",
+    "putus_pakan",
+    "jalan"
+  ],
+  "saat_gelap": "run",
+  "peran_indikator": {
+    "loose_weft": "masalah",
+    "mesin_stop": "masalah",
+    "putus_pakan": "masalah",
+    "jalan": "normal"
+  }
 }

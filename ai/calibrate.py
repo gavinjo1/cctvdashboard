@@ -26,7 +26,10 @@ from urllib.parse import urlparse
 import cv2
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lamp import read_all as read_lamps
+from lamp import buat_pembaca, read_tower
+
+#: urut ATAS -> BAWAH. TODO(pabrik): samakan dengan tabel bagian perawatan.
+INDIKATOR = ["mesin_stop", "putus_pakan", "putus_lusi", "setup"]
 
 log = logging.getLogger("calibrate")
 
@@ -58,7 +61,14 @@ class Grabber(threading.Thread):
 
             with state["lock"]:
                 lamps = list(state["lamps"])
-            results = read_lamps(frame, lamps)[0] if lamps else []
+            # Pembaca dibangun ulang hanya kalau kotak berubah — riwayat
+            # kedip tersimpan di dalamnya dan harus bertahan antar frame.
+            if lamps != self._lamps_terakhir:
+                self._lamps_terakhir = list(lamps)
+                self._pembaca = buat_pembaca(lamps, INDIKATOR)
+                for pb in self._pembaca:
+                    pb.rekam_baseline(frame)
+            results = read_tower(frame, self._pembaca)[0] if self._pembaca else []
 
             ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if ok:
@@ -66,7 +76,12 @@ class Grabber(threading.Thread):
                     state["jpeg"] = buf.tobytes()
                     state["size"] = (frame.shape[1], frame.shape[0])
                     state["reading"] = [
-                        {"no": r["no"], "color": r["color"], "ratio": r["ratio"]}
+                        {"no": r["no"], "status": r["status"],
+                         "indikator": r["indikator"], "kedip": r["kedip"],
+                         "segmen": [{"indikator": b["indikator"],
+                                     "keadaan": b["keadaan"],
+                                     "v90": b["v90"], "margin": b["margin"]}
+                                    for b in r["segmen"]]}
                         for r in results]
             time.sleep(0.2)
 
