@@ -1,666 +1,224 @@
 # CCTV Monitoring Dashboard
 
 Dashboard monitoring CCTV + produksi untuk pabrik weaving.
-
 **1 kamera = 1 line = 10 mesin = 1 operator.**
-Tiap mesin bisa mengerjakan MO yang berbeda.
 
-Backend Python (FastAPI), frontend HTML/CSS/JS tanpa build step — tidak butuh
-Node.js di server pabrik. AI berjalan sebagai proses terpisah dan boleh
-dipasang di mesin lain.
+Backend Python (FastAPI), frontend tanpa build step. AI worker proses terpisah,
+boleh di mesin lain yang punya GPU.
 
----
-
-## Isinya apa
-
-Tiga view, dipilih dari rail ikon di kiri:
-
-| View | Isi |
-|---|---|
-| **Camera** | Grid kartu kamera per line, kode MO di kaki kartu. Klik kartu → halaman detail: feed besar, rincian Order MO per mesin, panel alert, dan tombol Kalibrasi |
-| **Map** | Denah pabrik: hall, posisi line, titik kamera, 10 kotak kecil = 10 mesin (warna = status). Line yang alert berkedip merah. Klik line → ke detail kamera |
-| **Analysis** | Daftar line tanpa feed. Klik satu line → tabel 10 mesin (Order MO, status, RPM, efisiensi, output, stop, downtime), dikelompokkan per MO |
-
-Panel atas: total line, line running, idle, stop, mesin jalan, efisiensi
-rata-rata, output hari ini. Lonceng kanan atas menampilkan jumlah alert aktif;
-klik untuk memfilter kamera yang sedang alert.
-
-### Order MO per mesin
-
-Satu line berisi 10 mesin dan tiap mesin bisa mengerjakan MO berbeda. Di
-halaman detail kamera, mesin dikelompokkan otomatis per MO:
-
-```
-MO-7360   6 mesin    [01] [02] [03] [04] [06] [08]    jalan 6/6   eff 86%   1.116 m
-MO-1077   3 mesin    [05] [07] [10]                   jalan 3/3   eff 84%     684 m
-MO-4336   1 mesin    [09]                             jalan 1/1   eff 83%     449 m
-```
-
-Pengelompokan dihitung server oleh `group_by_mo()` di `app/source.py`, hasilnya
-di field `line.mo_groups`. Tiap MO punya warna pembeda yang dipakai konsisten
-di kartu kamera, halaman detail, dan tabel analisa.
-
-### Panel alert
-
-Klik kartu kamera → panel kanan. Kalau AI mendeteksi sesuatu panel berwarna
-merah dengan detail deteksi (zona, aktivitas, confidence, snapshot, durasi) dan
-tombol **False Alarm** / **Tindak Lanjuti**. Kalau tidak ada deteksi, panel
-kosong berwarna hijau dan hanya menampilkan info line.
+> Rincian go-live ada di [PRODUCTION.md](PRODUCTION.md).
 
 ---
 
-## Struktur
-
-```
-cctvdashboard/
-├── app/
-│   ├── config.py       Konfigurasi (semua via environment variable)
-│   ├── models.py       Line / Machine / Camera / Alert / Hall
-│   ├── source.py       SimSource (demo) & LiveSource (adapter pabrik)
-│   ├── calibration.py  Simpan zona & ROI lampu per kamera
-│   └── main.py         FastAPI: routes, WebSocket, background push
-├── templates/index.html
-├── static/
-│   ├── css/style.css
-│   └── js/
-│       ├── app.js        Render dashboard, ambil /api/lines, subscribe /ws
-│       └── calibrate.js  Kalibrasi zona & ROI lampu di atas feed
-├── ai/                 Proses terpisah, boleh di mesin lain
-│   ├── worker.py         AI worker produksi: CCTV → POST ke dashboard
-│   ├── lamp.py           Baca warna lampu tower → status mesin
-│   ├── calibrate.py      Alat kalibrasi mandiri (di luar dashboard)
-│   ├── webcam_demo.py    Alat uji: webcam / file video sebagai kamera
-│   ├── zones.example.json
-│   └── requirements.txt
-├── deploy/
-│   ├── cctv-dashboard.service  systemd dashboard
-│   ├── cctv-ai.service         systemd AI worker
-│   ├── go2rtc.yaml             restreamer RTSP → browser
-│   ├── nginx-cctv.conf         reverse proxy (opsional)
-│   └── start-windows.bat
-├── data/calibration.json   Dibuat otomatis saat kalibrasi pertama
-├── run.py                  Entry point
-├── run-demo.sh             Jalankan dashboard dalam mode uji webcam
-└── requirements.txt
-```
-
----
-
-## Mulai cepat
+## Pasang
 
 ```bash
-python3 -m venv venv
-./venv/bin/pip install -r requirements.txt
+python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
+```
+
+AI worker (opsional, boleh di mesin lain):
+
+```bash
+python3 -m venv venv-ai && ./venv-ai/bin/pip install -r ai/requirements.txt
+```
+
+## Jalankan
+
+```bash
 ./venv/bin/python run.py
 ```
 
-Buka `http://localhost:8010`. Data masih simulasi (18 line, 180 mesin) sehingga
-seluruh tampilan bisa dinilai sebelum kamera dan PLC tersambung.
-
----
-
-## Instalasi di server pabrik
-
-### Linux
-
-```bash
-sudo useradd -r -s /bin/false cctv
-sudo mkdir -p /opt/cctvdashboard
-sudo cp -r . /opt/cctvdashboard
-cd /opt/cctvdashboard
-sudo python3 -m venv venv
-sudo ./venv/bin/pip install -r requirements.txt
-sudo chown -R cctv:cctv /opt/cctvdashboard
-
-sudo cp deploy/cctv-dashboard.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now cctv-dashboard
-```
-
-Cek: `sudo systemctl status cctv-dashboard` — log: `sudo journalctl -u cctv-dashboard -f`
-Akses dari PC lain: `http://<ip-server>:8010`
-
-Buka firewall bila perlu:
-```bash
-sudo firewall-cmd --add-port=8010/tcp --permanent && sudo firewall-cmd --reload
-```
-
-### Windows
-
-Double-click `deploy\start-windows.bat` (venv dibuat otomatis pada run pertama).
-Agar jalan saat boot, daftarkan dengan [NSSM](https://nssm.cc):
-`nssm install CCTVDashboard`, arahkan ke `venv\Scripts\python.exe` dengan
-argumen `run.py`.
-
----
-
-## Konfigurasi
-
-Semua lewat environment variable.
-
-| Variable | Default | Keterangan |
-|---|---|---|
-| `CCTV_HOST` | `0.0.0.0` | Alamat bind |
-| `CCTV_PORT` | `8010` | Port HTTP |
-| `CCTV_PLANT_NAME` | `Weaving Plant` | Nama pabrik di header |
-| `CCTV_MESIN_PER_LINE` | `10` | Jumlah mesin per line |
-| `CCTV_TARGET_OUTPUT` | `60000` | Target output harian (meter) |
-| `CCTV_SOURCE` | `sim` | `sim` = simulasi, `live` = adapter pabrik |
-| `CCTV_PUSH_INTERVAL` | `5` | Interval push data ke browser (detik) |
-| `CCTV_CALIBRATION_FILE` | `data/calibration.json` | File penyimpanan kalibrasi |
-| `CCTV_STREAM_URL` | *(kosong)* | Template URL stream, `{id}` = id line |
-| `CCTV_STREAM_URL_GRID` | *(kosong)* | Template sub-stream untuk grid |
-| `CCTV_STREAM_MODE` | `video` | `video` / `iframe` / `img` |
-| `CCTV_STREAM_IMG_REFRESH` | `2` | Interval refresh (detik) untuk mode `img` |
-
----
-
-## Menyambung stream CCTV
-
-Browser **tidak bisa** membaca RTSP langsung, jadi perlu restreamer di tengah.
-Pakai [go2rtc](https://github.com/AlexxIT/go2rtc) — satu binary, tanpa dependency.
-
-```
-CCTV (RTSP) ──► go2rtc ──► HTTP/WebRTC ──► dashboard
-                   └─────► RTSP ────────► AI worker
-```
-
-Dua jalur terpisah: kalau AI worker mati, kamera tetap terlihat.
-
-**1. Isi daftar kamera** — template di `deploy/go2rtc.yaml`. Nama stream
-**harus sama dengan `line_id`** (`rapier-01`, `ajl-01`, ...) karena URL
-dibangun dari id itu.
-
-```yaml
-streams:
-  ajl-01:     rtsp://admin:pass@192.168.1.21:554/Streaming/Channels/101   # main
-  ajl-01-sub: rtsp://admin:pass@192.168.1.21:554/Streaming/Channels/102   # sub
-```
-
-**2. Arahkan dashboard ke go2rtc:**
-
-```bash
-CCTV_STREAM_URL="http://192.168.1.50:1984/api/stream.mp4?src={id}"
-CCTV_STREAM_URL_GRID="http://192.168.1.50:1984/api/stream.mp4?src={id}-sub"
-CCTV_STREAM_MODE=video
-```
-
-`{id}` diganti id line otomatis. Kotak kamera langsung berganti dari
-placeholder ke video.
-
-### Pilihan mode
-
-| `CCTV_STREAM_MODE` | URL go2rtc | Latency | Catatan |
-|---|---|---|---|
-| `video` *(default)* | `/api/stream.mp4?src={id}` | ~1-2 detik | Paling gampang, jalan di semua browser |
-| `iframe` | `/stream.html?src={id}` | ~0.3 detik | WebRTC, latency terendah, lebih berat |
-| `img` | `/api/frame.jpeg?src={id}` | per-refresh | Snapshot berkala, paling ringan untuk grid besar |
-
-### Kenapa perlu sub-stream
-
-`CCTV_STREAM_URL_GRID` untuk grid (18 kamera sekaligus), `CCTV_STREAM_URL`
-untuk halaman detail (1 kamera). Kalau grid ikut memakai main stream 1080p,
-18 dekoder video berjalan bersamaan di satu PC operator dan browser akan
-tersendat. Sub-stream (biasanya 640x360) menyelesaikan ini.
-
----
-
-## AI deteksi
-
-AI worker berjalan **terpisah** dari dashboard — boleh di mesin lain yang punya
-GPU. Dashboard tidak menjalankan AI sama sekali; ia hanya menerima hasil.
-
-### Pasang
-
-```bash
-python3 -m venv venv-ai
-./venv-ai/bin/pip install -r ai/requirements.txt
-cp ai/zones.example.json ai/zones.json     # lalu sesuaikan
-./venv-ai/bin/python ai/worker.py --config ai/zones.json
-```
-
-Untuk jalan permanen: `deploy/cctv-ai.service`.
-
-| Opsi | Guna |
-|---|---|
-| `--config` | File konfigurasi JSON (default `ai/zones.json`) |
-| `--model` | Model YOLO. `yolov8n` ringan, `yolov8s/m` lebih akurat |
-| `--no-dashboard-calibration` | Abaikan kalibrasi dashboard, pakai `zones.json` saja |
-| `--verbose` | Log lebih detail |
-
-### Yang dideteksi
-
-| Deteksi | Cara kerja | Parameter |
-|---|---|---|
-| **Operator tidak di area** | YOLO person, titik **kaki** di dalam zona; tidak ada orang > N detik | `absent_seconds` (120) |
-| **Kerumunan di line** | ≥ N orang di zona > M detik | `crowd_min` (3), `crowd_seconds` (30) |
-| **Mesin stop tanpa penanganan** | Ada lampu tower merah > N detik **dan** tidak ada orang di zona | `response_seconds` (300) |
-| **Status tiap mesin** | Warna lampu tower dibaca per mesin, dikirim ke dashboard | `status_interval` (10) |
-
-Titik acuan orang adalah **tengah-bawah** bounding box, bukan pusatnya —
-posisi kaki di lantai yang menentukan orang itu di dalam zona atau bukan.
-
-### Membaca status mesin dari lampu tower
-
-Deteksi lampu **tidak memakai AI** — hanya analisa warna (HSV) di dalam ROI.
-Jauh lebih murah dan lebih akurat daripada deteksi objek, dan satu kamera bisa
-membaca **10 lampu sekaligus** tanpa tambahan beban berarti.
-
-| Warna lampu | Status mesin |
-|---|---|
-| Hijau | `run` — jalan |
-| Kuning | `idle` — setting / peringatan |
-| Merah | `stop` — berhenti / alarm |
-| Padam | `off` — mati |
-
-Worker mengirimnya ke `POST /api/lines/{id}/machines`, dan status 10 mesin di
-dashboard langsung mengikuti apa yang terlihat kamera — termasuk kolom Status
-di tabel Analysis dan kotak mesin di view Map.
-
-Ini deteksi yang paling bernilai: menghasilkan angka *response time* operator
-terhadap mesin berhenti, sesuatu yang tidak dicatat sistem mesin.
-
-**Penting:** begitu satu line menerima data dari AI worker, simulator berhenti
-menimpa line tersebut selama 60 detik (`BaseSource.VISION_LEASE`). Tanpa ini,
-data asli tertimpa data simulasi tiap 5 detik. Line lain tetap disimulasi, jadi
-bisa dicampur: sebagian line pakai kamera asli, sisanya simulasi.
-
-### Beban komputasi
-
-Worker melakukan **sampling 3 fps**, bukan 30 fps — deteksi orang tidak butuh
-setiap frame, dan ini yang membuat banyak kamera muat di satu GPU. Frame
-di-`grab()` lalu dibuang tanpa decode kecuali saat gilirannya diproses.
-
-Perkiraan kasar dengan `yolov8n` di GPU kelas RTX 3060: ~15-20 kamera pada
-3 fps. Tanpa GPU (CPU saja): 3-5 kamera.
-
-### Anti-spam
-
-Tiap jenis alert punya `cooldown_seconds` (default 600) per kamera, supaya satu
-kejadian tidak mengirim puluhan alert. Alert dari AI **tidak hilang sendiri** —
-hanya tertutup saat operator menekan Tindak Lanjuti / False Alarm di dashboard.
-
----
-
-## Kalibrasi zona & ROI lampu
-
-Yang paling menentukan akurasi adalah **zona** (area line di dalam frame) dan
-**ROI lampu** (kotak di sekeliling tiap lampu tower). Tanpa zona, orang yang
-lewat di gang ikut terhitung.
-
-### Cara utama: langsung di dashboard
-
-Buka kartu kamera → tombol **Kalibrasi** di kanan atas. Gambar dengan mouse
-langsung di atas feed kamera, tekan **Simpan**.
-
-1. **Zona Line** — klik sudut-sudut area line.
-2. **Kotak Lampu** — seret **satu kotak panjang** menutupi semua lampu tower,
-   isi jumlah mesin, tekan **Bagi Rata**. Sepuluh ROI langsung terbentuk.
-   (Bisa juga satu per satu; klik kotak untuk menghapus.)
-3. Panel di bawah toolbar membaca **warna lampu langsung di browser** —
-   `03 red 87%` berarti ROI mesin 3 memang menangkap lampu merah. Ini yang
-   membedakan dengan menebak angka: hasilnya terverifikasi seketika.
-4. **Simpan** → tersimpan ke `data/calibration.json`.
-
-Setelah disimpan, zona dan kotak lampu **tetap tergambar di feed** meski mode
-kalibrasi ditutup (garis putus-putus hijau untuk zona, kotak berwarna sesuai
-lampu yang terbaca). Jadi hasil edit selalu terlihat tanpa harus membuka
-mode kalibrasi lagi.
-
-Tiga tombol yang mudah tertukar:
-
-| Tombol | Yang terjadi |
-|---|---|
-| **Batal Terakhir** | Hapus satu titik zona / satu kotak terakhir di kanvas |
-| **Bersihkan Gambar** | Kosongkan kanvas. Data di server **belum** berubah sampai Simpan ditekan |
-| **Hapus Kalibrasi** | Hapus data tersimpan untuk **kamera ini saja**. Kamera lain tidak tersentuh |
-
-**AI worker menariknya sendiri tiap 30 detik** lewat
-`GET /api/lines/{id}/calibration`. Jadi menggeser zona di dashboard langsung
-berlaku pada kamera RTSP aslinya — tanpa menyalin file ke server AI, tanpa
-me-restart worker. `zones.json` tetap dipakai kalau line belum pernah
-dikalibrasi atau dashboard sedang mati.
-
-**Tidak ada kalibrasi bawaan.** Kalau `data/calibration.json` belum ada, semua
-kamera mulai kosong. Kalibrasi yang sudah disimpan bertahan sampai dihapus —
-restart dashboard tidak menyentuhnya, dan menyimpan satu kamera tidak mengubah
-kamera lain.
-
-Menghapus dari terminal:
-
-```bash
-curl -X DELETE http://localhost:8010/api/lines/ajl-01/calibration   # satu kamera
-rm data/calibration.json                                            # semuanya
-```
-
-### Catatan penting
-
-> **URL RTSP tidak disimpan di dashboard.** Di dalamnya ada password kamera,
-> sedangkan dashboard dibuka banyak orang di jaringan pabrik. Yang disimpan
-> hanya koordinat zona dan ROI. URL kamera tetap di `zones.json` milik worker.
-
-> **Koordinat selalu persen (0-100), bukan piksel** — tidak perlu dikalibrasi
-> ulang kalau resolusi kamera diubah.
-
-> **Satu sumber kalibrasi.** `ai/webcam_demo.py` juga menarik kalibrasi dari
-> dashboard tiap 10 detik, sama seperti `ai/worker.py`. Tanpa ini, overlay yang
-> dibakar ke frame memakai `--zone/--lamp` dari CLI sementara dashboard
-> menyimpan yang lain — dua-duanya tampil bertumpuk dan menyesatkan.
-
-> **Pratinjau warna di browser** butuh header `Access-Control-Allow-Origin` dari
-> sumber stream. Kalau tidak ada, kotaknya tetap tersimpan dan tetap dibaca AI
-> worker — hanya pratinjau warnanya yang mati, dan panel mengatakan demikian
-> (bukan diam-diam menampilkan "padam").
-
-> Ambang batas HSV di `static/js/calibrate.js` sengaja disamakan dengan
-> `ai/lamp.py`. Kalau salah satu diubah, ubah keduanya.
-
-### Alat kalibrasi mandiri (opsional)
-
-Kalau dashboard belum jalan, atau hanya punya foto kamera:
-
-```bash
-./venv-ai/bin/python ai/calibrate.py --source rtsp://192.168.1.50:8554/ajl-01 --line-id ajl-01
-./venv-ai/bin/python ai/calibrate.py --device 1 --line-id ajl-01        # webcam
-./venv-ai/bin/python ai/calibrate.py --source foto-ajl01.jpg            # dari foto
-```
-
-Buka `http://127.0.0.1:1985` — cara pakainya sama, hasilnya disalin ke
-`ai/zones.json` (atau tombol Simpan → `ai/zones.generated.json`).
-
-### Bentuk konfigurasi
-
-```json
-{
-  "line_id": "ajl-01",
-  "rtsp": "rtsp://192.168.1.50:8554/ajl-01",
-  "zone": [[8,30],[92,30],[92,95],[8,95]],
-  "machines": [
-    {"no": 1, "lamp": [5.4, 4.0, 6.4, 14.0]},
-    {"no": 2, "lamp": [14.6, 4.0, 6.4, 14.0]}
-  ]
-}
-```
-
----
-
-## Menyambung ke data produksi asli
-
-Data sekarang masih **simulasi** (`CCTV_SOURCE=sim`). Untuk data pabrik, isi
-dua method di `app/source.py` → class `LiveSource`:
-
-```python
-class LiveSource(BaseSource):
-    def bootstrap(self):
-        # dipanggil sekali saat startup: bangun daftar Group + Line + Machine,
-        # posisi di denah, dan info kamera
-
-    def refresh(self):
-        # dipanggil tiap CCTV_PUSH_INTERVAL detik: update status / rpm / eff /
-        # output / stops / order_mo tiap MESIN, lalu panggil rollup()
-```
-
-Lalu set `CCTV_SOURCE=live`. Struktur `Line`/`Machine` di `app/models.py` tidak
-perlu diubah — frontend otomatis ikut. Kalau adapter belum diisi, server gagal
-start dengan pesan jelas, bukan diam-diam kosong.
-
-Sumber yang umum dipakai: database loom monitoring, tag OPC-UA / Modbus dari
-PLC, atau REST API vendor mesin.
-
-**Saran pembagian tugas:** angka produksi (RPM, output, efisiensi) sebaiknya
-dari PLC, bukan dari AI. AI dipakai untuk yang tidak dicatat mesin: kehadiran
-operator dan response time. Kombinasi keduanya yang membuat dashboard berguna —
-*"AJL 03 stop 12 menit, operator baru muncul di menit ke-9"*.
+Buka <http://localhost:8000>. Semua setelan lewat environment variable.
 
 ---
 
 ## Menguji tanpa CCTV
 
-`ai/webcam_demo.py` menirukan go2rtc + AI worker sekaligus dalam satu proses:
-ambil frame, deteksi orang, baca lampu, gambar overlay, layani MJPEG, dan kirim
-alert ke dashboard.
+Tiga cara, pilih salah satu. Semuanya butuh **dua terminal**:
+sumber gambar di satu, dashboard di satu lagi.
 
-Satu proses karena macOS hanya mengizinkan **satu** aplikasi membuka webcam pada
-satu waktu — kalau bridge dan worker jalan terpisah, keduanya berebut.
+### A. Foto diam — paling mudah untuk menyetel kotak lampu
 
-### Dari webcam laptop
+Simpan satu foto per line, namanya = `line_id`:
 
-```bash
-python3 -m venv venv-ai
-./venv-ai/bin/pip install -r ai/requirements.txt
-./venv-ai/bin/python ai/webcam_demo.py --dashboard http://127.0.0.1:8010 --line-id ajl-01
+```
+ai/foto/ajl-01.png
+ai/foto/ajl-02.png
 ```
 
-Dashboard di terminal lain:
+```bash
+./venv-ai/bin/python ai/foto_kamera.py --dir ai/foto
+```
 
 ```bash
 ./run-demo.sh
 ```
 
-(setara dengan `CCTV_STREAM_MODE=img CCTV_STREAM_URL="http://127.0.0.1:1984/frame?src={id}" python run.py`.
-Port lain: `CCTV_PORT=8010 ./run-demo.sh`)
+Foto dibaca ulang tiap permintaan — timpa berkasnya, muat ulang halaman,
+tanpa restart. Foto non-16:9 otomatis diberi bilah agar kotak kalibrasi
+tidak meleset.
 
-Berdiri di depan kamera lalu menyingkir > 15 detik → alert "Operator tidak di
-area" muncul di dashboard.
-
-Default `--device 1` (webcam fisik). Index `0` sering dipakai OBS Virtual
-Camera — sesuaikan dengan `--device 0` kalau OBS tidak terpasang.
-
-### Dari file video
-
-Berguna kalau punya rekaman CCTV lama dari pabrik:
+### B. Berkas video
 
 ```bash
-./venv-ai/bin/python ai/webcam_demo.py --source rekaman.mp4 --loop
+./venv-ai/bin/python ai/webcam_demo.py --source /tmp/uji.mp4 --loop --line-id ajl-01
 ```
-
-### Opsi
-
-| Opsi | Default | Guna |
-|---|---|---|
-| `--device` | `1` | Index webcam |
-| `--source` | *(webcam)* | URL RTSP/HTTP atau path file video |
-| `--no-dashboard-calibration` | — | Abaikan kalibrasi dashboard, pakai `--zone`/`--lamp` |
-| `--no-overlay` | — | Jangan gambar zona/kotak ke frame (dashboard yang menggambar) |
-| `--loop` | — | Ulangi dari awal kalau sumbernya file video |
-| `--detector` | `yolo` | `hog` = detektor bawaan OpenCV, tanpa unduh model |
-| `--zone` | tengah frame | Polygon zona dalam persen: `x1,y1,x2,y2,...` |
-| `--lamp` | — | ROI lampu satu mesin: `x,y,w,h`. Ulangi untuk tiap mesin |
-| `--lamp-grid` | — | Buat N ROI lampu otomatis berderet: `--lamp-grid 10` |
-| `--absent` | `15` | Detik tanpa orang sebelum alert (produksi: 120) |
-| `--line-id` | `ajl-01` | Line tujuan alert |
-| `--fps` | `4` | fps deteksi |
-| `--max-width` | `960` | Perkecil frame setelah ditangkap (hemat CPU) |
-| `--no-overlay` | — | Jangan bakar zona & kotak ke frame |
-| `--no-dashboard-calibration` | — | Abaikan kalibrasi dashboard, pakai `--zone/--lamp` |
-| `--probe` | — | Cek sumber lalu keluar: resolusi, kecerahan, jumlah deteksi |
-
-Endpoint bridge: `/frame` (1 JPEG), `/stream` (MJPEG), `/status` (jumlah orang,
-fps, dan pembacaan lampu).
-
-> Ini **alat uji**. Untuk produksi tetap pakai go2rtc + `ai/worker.py` — MJPEG
-> dari satu proses Python tidak akan kuat melayani 18 kamera.
-
-### Kalau frame hitam
-
-Jalankan `--probe` dulu: ia menampilkan resolusi dan **kecerahan** tiap frame.
-Di bawah 6 berarti frame hitam.
 
 ```bash
-./venv-ai/bin/python ai/webcam_demo.py --probe
+./run-demo.sh
 ```
 
-> **Jangan paksa resolusi kamera** dengan `--width/--height`. Di macOS, meminta
-> ukuran yang tidak didukung webcam membuat AVFoundation mengirim frame hitam —
-> lampu kamera menyala tapi gambarnya kosong. Biarkan kamera memakai resolusi
-> nativenya; frame diperkecil setelah ditangkap lewat `--max-width`.
+> **Salin dulu videonya.** Jangan arahkan alat apa pun ke satu-satunya salinan.
 
-> **macOS:** jalankan dari aplikasi Terminal Anda sendiri, bukan lewat editor
-> atau agent. Izin kamera hanya bisa diberikan lewat dialog sistem yang muncul
-> untuk aplikasi yang menjalankannya. Kalau dialog tidak muncul: System Settings
-> → Privacy & Security → Camera, izinkan Terminal, lalu tutup dan buka lagi
-> Terminal (izin baru berlaku setelah restart).
+### C. Webcam laptop
 
-Penyebab frame hitam lainnya: OBS masih memegang kamera (tutup OBS termasuk
-Virtual Camera-nya), atau salah index device.
+```bash
+./venv-ai/bin/python ai/webcam_demo.py --device 0
+```
 
-### Soal URL RTSP publik
+```bash
+./run-demo.sh
+```
 
-URL demo publik lama (Wowza `wowzaec2demo.streamlock.net`, IPVM, traffic cam)
-sudah mati semua. Perlu diperhatikan juga: URL Wowza Cloud berbentuk
-`xxx.entrypoint.cloud.wowza.com:1935` adalah endpoint **ingest** — tempat
-mengirim video, bukan menonton. RTSP DESCRIBE akan berhasil, tapi SETUP membalas
-`403 Forbidden`. URL untuk menonton ada di dashboard Wowza, biasanya HLS
-`.m3u8` lewat CDN mereka.
+---
+
+## Produksi
+
+### Dashboard
+
+```bash
+sudo cp deploy/cctv-dashboard.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now cctv-dashboard
+```
+
+Isi dulu di berkas service itu: `CCTV_API_KEY`, `CCTV_SOURCE=live`,
+`CCTV_STREAM_URL`. Cek kesiapan:
+
+```bash
+curl -s http://SERVER:8000/healthz | python3 -m json.tool
+```
+
+`"production_ready": true` berarti pemeriksaan otomatis lolos.
+
+### Stream kamera (go2rtc)
+
+Browser tidak bisa membaca RTSP langsung. Isi `deploy/go2rtc.yaml` —
+**nama stream harus sama dengan `line_id`**.
+
+```bash
+go2rtc -config deploy/go2rtc.yaml
+```
+
+```bash
+CCTV_STREAM_URL="http://IP:1984/api/stream.mp4?src={id}"
+CCTV_STREAM_URL_GRID="http://IP:1984/api/stream.mp4?src={id}-sub"
+```
+
+Grid 18 kamera **wajib** pakai sub-stream, atau PC operator tersendat.
+
+### AI worker
+
+```bash
+cp ai/zones.example.json ai/zones.json    # isi RTSP + api_key
+chmod 600 ai/zones.json                   # berisi password kamera
+./venv-ai/bin/python ai/worker.py --config ai/zones.json
+```
+
+---
+
+## Kalibrasi
+
+Tombol **Kalibrasi** di halaman detail kamera.
+
+| Mode | Guna |
+|---|---|
+| **Zona Line** | Klik menambah titik. Orang dihitung kalau titik kakinya di dalam zona |
+| **Kotak Lampu** | Seret di sekeliling menara lampu. "Bagi Rata" membuat 10 kotak sekaligus |
+
+Kotak menara harus meliputi **hanya tumpukan mika** — tanpa tutup atas dan kaki
+hitam. Kalau kaki ikut terkotak, semua batas segmen bergeser dan pembacaannya
+salah **tapi tetap terlihat wajar**.
+
+Tersimpan di `data/calibration.json`, ditarik AI worker lewat API tiap 30 detik.
+
+### Menguji pembacaan lampu di luar dashboard
+
+```bash
+./venv-ai/bin/python ai/uji_lampu_video.py rekaman.mp4 --kisi 5     # cari kotak
+./venv-ai/bin/python ai/uji_lampu_video.py rekaman.mp4 \
+    --tower 46,10,6,46 --indikator putih,merah,kuning,hijau
+```
+
+Kolom `margin` = jarak ke ambang. Menyala harus jelas **positif**, padam jelas
+**negatif**. Berdempet di nol berarti kotaknya meleset — perbaiki kotak dulu,
+bukan ambangnya.
+
+---
+
+## Menara lampu
+
+Arti datang dari **posisi segmen**, bukan warna. Diisi di `ai/zones.json`:
+
+```json
+"indikator": ["loose_weft", "mesin_stop", "putus_pakan", "jalan"],
+"saat_gelap": "run"
+```
+
+`indikator` urut **atas → bawah**.
+
+`saat_gelap` = status saat tidak ada segmen menyala:
+`"run"` (menara padam saat mesin jalan) atau `"off"` (hijau menyala terus).
+**Salah pilih membuat status semua mesin terbalik.** Pastikan dengan melihat
+satu mesin yang sedang berproduksi.
+
+Baca lampu di **25–30 fps** — sinyalnya kedip, dan pada 3 fps kedip 3 Hz tidak
+terdeteksi sama sekali. Pembacaan lampu murah (tanpa GPU); deteksi orang boleh
+jauh lebih lambat.
+
+---
+
+## Data
+
+Semua di `data/` pada server dashboard:
+
+| | |
+|---|---|
+| `history.db` | produksi, alert, laporan shift, episode lampu |
+| `calibration.json` | zona & kotak lampu — **wajib backup** |
+| `operators.json` | nama yang boleh menutup alert |
+
+```bash
+sqlite3 data/history.db ".backup '/backup/history.db'"
+```
+
+Jangan `cp` saat berjalan — mode WAL, salinannya bisa sobek.
 
 ---
 
 ## API
 
-| Endpoint | Keterangan |
+| | |
 |---|---|
-| `GET /` | Dashboard |
-| `GET /api/lines` | Snapshot semua line + mesin + denah + kalibrasi + KPI |
-| `GET /api/lines/{id}` | Detail satu line |
-| `GET /api/summary` | Ringkasan KPI saja |
-| `GET /api/alerts` | Daftar alert AI yang aktif |
-| `POST /api/alerts` | **Dipanggil AI worker** saat kamera mendeteksi sesuatu |
-| `POST /api/alerts/{id}/resolve` | Operator menekan Tindak Lanjuti / False Alarm |
-| `POST /api/lines/{id}/machines` | **Status mesin dari pembacaan lampu tower** |
-| `GET /api/calibration` | Semua kalibrasi (dipakai AI worker) |
-| `GET/PUT/DELETE /api/lines/{id}/calibration` | Kalibrasi satu kamera |
-| `GET /healthz` | Health check (untuk monitoring server) |
-| `GET /api/docs` | Dokumentasi API otomatis (Swagger) |
-| `WS /ws` | Push data realtime |
-
-### Mengirim deteksi dari AI worker
+| `GET /api/lines` | snapshot semua line |
+| `GET /healthz` | status + daftar yang belum siap produksi |
+| `WS /ws` | update realtime |
+| `POST /api/alerts` | kirim deteksi (butuh `X-API-Key`) |
+| `POST /api/lines/{id}/machines` | status mesin dari lampu (butuh `X-API-Key`) |
+| `GET /api/report/shift` | laporan shift |
+| `GET /api/docs` | dokumentasi lengkap |
 
 ```bash
-curl -X POST http://localhost:8010/api/alerts \
-  -H "Content-Type: application/json" \
-  -d '{"line_id":"ajl-01","label":"Operator tidak di area","confidence":91,
-       "activity":"Tidak ada orang di zona line","object_type":"Person",
-       "duration":143,"severity":"high"}'
-```
-
-Alert langsung muncul di semua dashboard yang terbuka. Endpoint ini bekerja di
-mode `sim` juga, jadi bisa diuji sebelum kamera terpasang.
-
-### Mengirim status mesin
-
-```bash
-curl -X POST http://localhost:8010/api/lines/ajl-01/machines \
-  -H "Content-Type: application/json" \
-  -d '{"machines":[{"no":1,"status":"run","color":"green"},
-                   {"no":3,"status":"stop","color":"red"}]}'
+curl -X POST http://SERVER:8000/api/alerts \
+  -H "Content-Type: application/json" -H "X-API-Key: TOKEN" \
+  -d '{"line_id":"ajl-01","label":"Mesin stop tanpa penanganan","duration":312}'
 ```
 
 ---
 
-## Laporan shift
+## Catatan
 
-Buka view **Analysis** → tab **Laporan Shift**. Pilih shift dari dropdown;
-shift yang sedang berjalan ikut tersedia dengan angka sementara. Tombol
-**Cetak** menghasilkan halaman siap tanda tangan.
-
-### Kenapa efisiensi tidak boleh diambil dari cuplikan terakhir
-
-`output` dan `stops` bersifat akumulatif — nilai akhir periode sudah benar.
-`eff`, `rpm`, dan `status` tidak: ketiganya keadaan sesaat. Mengambil
-cuplikan terakhir berarti melaporkan keadaan pada detik shift berakhir.
-Satu mesin yang berhenti lima menit sebelum pergantian akan tercatat 0%
-untuk seluruh shift.
-
-Karena itu `app/report.py` mengumpulkan nilai sesaat sepanjang periode
-dengan pembobotan waktu, lalu menulis satu baris ringkasan per mesin saat
-periode berakhir — 180 baris per shift, bukan 51.840.
-
-Laporan memuat tiga angka efisiensi yang berbeda arti:
-
-| Kolom | Arti | Kegunaan |
-|---|---|---|
-| **Efisiensi** | Rata-rata sepanjang shift, mesin berhenti dihitung 0% | Gambaran produksi sebenarnya |
-| **Saat Jalan** | Rata-rata hanya selama mesin beroperasi | Performa mesin itu sendiri |
-| **Availability** | Porsi waktu mesin beroperasi | Memisahkan masalah mesin dari masalah penjadwalan |
-
-Mesin dengan **Saat Jalan** tinggi tetapi **Availability** rendah berarti
-mesinnya sehat tetapi terlalu sering menganggur — masalahnya bukan di mesin.
-
-### Cakupan data
-
-Laporan hanya mencakup waktu dashboard benar-benar berjalan. Bila dashboard
-dinyalakan di tengah shift atau sempat mati, laporan menampilkan peringatan
-beserta persentase cakupannya. Output dan jumlah stop tetap benar karena
-akumulatif; efisiensi dan availability hanya menggambarkan periode terekam.
-
----
-
-## Pengumpulan data uji
-
-Setiap perubahan warna lampu dicatat sebagai **episode** — kapan mulai,
-kapan selesai, berapa lama — bukan cuplikan per detik. Kamera membaca warna
-beberapa kali per detik; mencatat tiap pembacaan menghasilkan ratusan ribu
-baris per hari yang tidak bisa dibaca. Yang berguna untuk pengujian adalah
-kapan warna **berubah**.
-
-### Mengunduh
-
-Buka kartu kamera → tombol **Unduh Log** di kanan atas. Berkas `.txt` berisi
-tiga bagian: urut waktu, dikelompokkan per mesin, dan episode yang masih
-berjalan saat berkas dibuat.
-
-```
-MESIN 01   2 episode   nyala 3d  mati 4d
-   nyala    jam 08:54:30 - 08:54:33   (3d)
-   mati     jam 08:54:33 - 08:54:37   (4d)
-```
-
-Lewat terminal:
-
-```bash
-curl -O -J http://localhost:8000/api/log/ajl-01.txt          # seluruh catatan
-curl -O -J "http://localhost:8000/api/log/ajl-01.txt?hours=8" # 8 jam terakhir
-```
-
-Tombol **Reset Log** mengosongkan catatan satu line untuk memulai sesi
-pengujian baru. Line lain tidak terpengaruh.
-
-### Ketepatan waktu
-
-Jam pada catatan setepat **interval kiriman status**, bukan setepat frame.
-Perubahan warna baru tercatat pada kiriman berikutnya ke dasbor:
-
-| Pengirim | Bawaan | Untuk pengujian |
-|---|---|---|
-| `ai/webcam_demo.py` | 5 detik | `--status-interval 1` |
-| `ai/worker.py` | 10 detik | `status_interval` di `zones.json` |
-
-### Pengaturan
-
-| Variable | Bawaan | Arti |
-|---|---|---|
-| `CCTV_EVENT_LOG` | `vision` | `vision` = hanya dari kamera, `all` = termasuk simulasi, `off` = mati |
-| `CCTV_EVENT_MIN_SECONDS` | `3` | Episode lebih pendek dari ini diabaikan |
-
-Ambang minimum itu perlu: lampu tower bisa berkedip sesaat, dan tanpa
-penyaringan berkas log akan penuh kejadian yang tidak berarti.
-
----
-
-## Catatan operasional
-
-- **Jalankan 1 worker uvicorn saja.** State line disimpan di memori dan
-  WebSocket butuh koneksi sticky. Kalau nanti butuh multi-worker, pindahkan
-  state ke Redis atau database dulu.
-- **Reverse proxy wajib meneruskan header WebSocket.** Config nginx yang sudah
-  benar ada di `deploy/nginx-cctv.conf`. Ini penyebab paling sering dashboard
-  "diam" setelah dipasang proxy.
-- Frontend menyambung ulang otomatis kalau koneksi putus (backoff 2–12 detik).
-  Titik di kiri atas header: hijau = terhubung, abu = terputus.
-- Update dari server **tidak membangun ulang DOM** — nilai di-patch di tempat
-  supaya tidak berkedip dan scroll/hover tidak hilang. `render()` hanya dipanggil
-  saat struktur berubah (ganti view, filter, buka accordion).
-- AI worker tidak mati kalau dashboard belum siap; ia mencatat warning lalu
-  mencoba lagi. Dashboard boleh di-restart tanpa mematikan semua worker.
-- Alert simulasi hilang sendiri setelah 4–10 siklus. Alert dari AI worker
-  **tidak** — hanya tertutup saat operator menanganinya.
+- **Tetap 1 worker uvicorn.** State di memori + WebSocket butuh koneksi sticky
+- nginx wajib meneruskan header `Upgrade`/`Connection` — `deploy/nginx-cctv.conf` sudah benar
+- Server, AI worker, dan NVR harus **satu zona waktu + NTP**. Kalau tidak, waktu
+  alert tidak cocok dengan rekaman CCTV dan alert tidak bisa diverifikasi
+- Sebelum produksi: `grep -rn "TODO(pabrik)" app/ ai/`
