@@ -102,16 +102,120 @@ def bagi_segmen(tower_px, n):
     return [(x, int(y + i * tinggi), w, max(1, int(tinggi))) for i in range(n)]
 
 
+def p90(a):
+    """Persentil ke-90, tanpa ongkos np.percentile.
+
+    np.percentile pada potongan sekecil ROI lampu menghabiskan 65-73 us
+    APA PUN ukurannya — hampir seluruhnya validasi, penanganan sumbu, dan
+    interpolasi di dalam NumPy, bukan hitungannya. np.partition mengerjakan
+    pemilihan yang sama secara langsung: 2,8-11 us, 6-23 kali lebih cepat.
+
+    Bedanya hanya interpolasi antar dua elemen. Diukur pada ROI lampu
+    sungguhan (merah/hijau/putih/padam/latar): selisih terbesar 0,10 dari
+    skala 0-255, sementara ambang terkecil yang dipakai modul ini 40.
+    """
+    a = a.ravel()
+    if a.size == 0:
+        return 0.0
+    if a.size == 1:
+        return float(a[0])
+    k = int(0.9 * (a.size - 1))
+    return float(np.partition(a, k)[k])
+
+
 def _ukur(frame, roi):
-    """(persentil ke-90 kanal V, rata-rata S) di dalam ROI."""
+    """(persentil ke-90 kanal V, rata-rata S, potongan HSV) di dalam ROI.
+
+    Potongan HSV ikut dikembalikan supaya warna bisa dihitung belakangan
+    TANPA memotong dan mengonversi ulang — dan hanya untuk segmen yang
+    memang menyala.
+    """
     x, y, w, h = roi
     H, W = frame.shape[:2]
     x0, y0 = max(0, x), max(0, y)
     x1, y1 = min(W, x + w), min(H, y + h)
     if x1 <= x0 or y1 <= y0:
-        return 0.0, 0.0
+        return 0.0, 0.0, None
     hsv = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
-    return float(np.percentile(hsv[:, :, 2], 90)), float(np.mean(hsv[:, :, 1]))
+    return p90(hsv[:, :, 2]), float(np.mean(hsv[:, :, 1])), hsv
+
+
+#: Batas hue OpenCV (0-179, jadi setengah derajat) per warna menara.
+#: Merah melintasi titik nol, karena itu ditulis sebagai dua rentang.
+PITA_WARNA = (
+    ("merah",  ((0, 12), (168, 180))),
+    ("kuning", ((14, 35),)),
+    ("hijau",  ((35, 92),)),
+    ("biru",   ((92, 135),)),
+)
+
+#: Ambang pada PERSENTIL KE-90 SATURASI, bukan pada rata-rata. Di bawah ini
+#: lampu disebut PUTIH. Terukur pada rekaman pabrik:
+#:     lampu putih (vid16)  S90 =  48
+#:     lampu merah (vid3)   S90 = 192
+#:     lampu hijau (vid16)  S90 = 232
+SAT_PUTIH = 100.0
+
+#: Piksel ikut dinilai kalau V-nya setidaknya segini dari v90 segmen.
+#: Setengah, bukan 0,8: warna sebuah LED justru ada di HALO-nya.
+BAGIAN_NYALA = 0.50
+
+#: kecerahan mutlak minimum agar sebuah piksel ikut dinilai
+V_PIKSEL_MIN = 60.0
+
+
+def warna_segmen(hsv, v90):
+    """Warna lampu yang menyala di dalam potongan HSV.
+
+    Kembalian: (nama_warna, keyakinan 0-1). None kalau tidak bisa dinilai.
+
+    DUA JEBAKAN, keduanya ditemukan pada rekaman pabrik, bukan dikarang:
+
+    1. INTI LED YANG JENUH ITU PUTIH. Pada lampu merah di vid3.jpeg, inti
+       lampu menabrak batas sensor sehingga saturasinya nyaris nol — median
+       S seluruh kotak cuma 12. Mengambil piksel PALING TERANG justru
+       mengambil bagian yang tidak berwarna, dan lampu merah terbaca putih.
+       Warnanya ada di halo. Karena itu penilaian memakai persentil ke-90
+       saturasi, dan hue diambil dari piksel paling JENUH — bukan paling
+       terang.
+
+    2. HUE ITU MELINGKAR. Merah ada di 175 dan juga di 5. Merata-ratakannya
+       secara biasa memberi 90, yaitu cyan: warna yang tidak ada di menara
+       mana pun, dan salahnya tidak kelihatan dari angkanya. Dipakai
+       rata-rata melingkar lewat jumlah vektor.
+    """
+    if hsv is None or hsv.size == 0:
+        return None, 0.0
+    v = hsv[:, :, 2].astype(np.float32)
+    s = hsv[:, :, 1].astype(np.float32)
+    terang = v >= max(V_PIKSEL_MIN, v90 * BAGIAN_NYALA)
+    if not terang.any():
+        return None, 0.0
+
+    s90 = p90(s[terang])
+    if s90 < SAT_PUTIH:
+        return "putih", round(1.0 - s90 / SAT_PUTIH, 4)
+
+    # hue hanya dari piksel paling jenuh: di situlah warna mika terbaca
+    pilih = terang & (s >= s90)
+    h = hsv[:, :, 0].astype(np.float32)[pilih]
+    bobot = s[pilih]
+    if h.size == 0:
+        return None, 0.0
+    sudut = h * (2.0 * np.pi / 180.0)        # 0-179 -> lingkaran penuh
+    cx = float(np.sum(np.cos(sudut) * bobot))
+    cy = float(np.sum(np.sin(sudut) * bobot))
+    if cx == 0.0 and cy == 0.0:
+        return None, 0.0
+    rerata = (np.arctan2(cy, cx) % (2.0 * np.pi)) * (180.0 / (2.0 * np.pi))
+
+    for nama, pita in PITA_WARNA:
+        if any(lo <= rerata < hi for lo, hi in pita):
+            cocok = np.zeros(h.shape, dtype=bool)
+            for lo, hi in pita:
+                cocok |= (h >= lo) & (h < hi)
+            return nama, round(float(np.mean(cocok)), 4)
+    return None, 0.0
 
 
 class PembacaMenara:
@@ -123,7 +227,8 @@ class PembacaMenara:
 
     def __init__(self, no, tower, indikator,
                  delta_baseline=DELTA_BASELINE, delta_tetangga=DELTA_TETANGGA,
-                 v_minimum=V_MINIMUM, jendela_kedip=JENDELA_KEDIP):
+                 v_minimum=V_MINIMUM, jendela_kedip=JENDELA_KEDIP,
+                 warna_harapan=None):
         self.no = no
         self.tower = tower                  # [x, y, w, h] persen
         self.indikator = list(indikator)    # urut ATAS -> BAWAH
@@ -133,7 +238,16 @@ class PembacaMenara:
         self.v_minimum = v_minimum
         self.jendela = jendela_kedip
         self.baseline = None
+        # Warna yang SEHARUSNYA ada di tiap posisi, urut atas->bawah.
+        # Dipakai untuk memeriksa kotak, bukan untuk menentukan arti.
+        self.warna_harapan = list(warna_harapan) if warna_harapan else None
         self._riwayat = [deque() for _ in range(self.n)]
+        # Status mesin terakhir dan SEJAK KAPAN. Jam transisi ini yang harus
+        # sampai ke dashboard — bukan jam paket dikirim. Lampu dibaca 25x per
+        # detik, jadi jam ini teliti; kalau dibuang dan diganti jam kedatangan
+        # paket, tiap catatan meleset sepanjang jeda pengiriman.
+        self.status_kini = None
+        self.status_sejak = None
 
     # ---------- kalibrasi ----------
     def rekam_baseline(self, frame):
@@ -170,6 +284,18 @@ class PembacaMenara:
 
             self._catat(i, now, terang)
             keadaan = self._keadaan(i, now)
+
+            # Warna dihitung HANYA untuk segmen yang menyala. Karena menara
+            # padam berarti mesin jalan, keadaan normal di pabrik ini adalah
+            # semua segmen gelap — jadi biaya hue mendekati nol sepanjang
+            # hari dan hanya dibayar saat ada yang perlu dilihat.
+            warna, yakin = (warna_segmen(ukur[i][2], v[i]) if terang
+                            else (None, 0.0))
+            cocok = None
+            if warna and self.warna_harapan:
+                harap = self.warna_harapan[i]
+                cocok = (warna == harap) if harap else None
+
             hasil.append({
                 "no": self.no,
                 "seg": i,
@@ -178,6 +304,13 @@ class PembacaMenara:
                 "aktif": keadaan in (NYALA, KEDIP),
                 "v90": round(v[i], 1),
                 "sat": round(ukur[i][1], 1),
+                # Warna dari piksel — pemeriksa silang, BUKAN pengganti posisi.
+                # Kalau segmen ke-2 menyala tapi warnanya merah padahal
+                # seharusnya hijau, kotaknya meleset: arti dari posisi jadi
+                # salah tanpa satu pun angka terlihat aneh.
+                "warna": warna,
+                "warna_yakin": round(yakin, 2),
+                "warna_cocok": cocok,
                 "baseline": round(self.baseline[i], 1) if self.baseline else None,
                 "acuan": round(acuan, 1),
                 # jarak ke ambang — angka inilah yang dipakai menyetel di lapangan
@@ -264,33 +397,66 @@ def status_mesin(bacaan, peran=None, saat_gelap="run"):
     return "run", aktif
 
 
+def warna_utama(bacaan):
+    """Warna lampu yang menyala paling atas. None kalau menara padam.
+
+    Dipakai untuk mewarnai mesin di layar sesuai lampu yang benar-benar
+    terlihat di lantai — supaya yang dilihat PPIC sama dengan yang dilihat
+    operator saat berdiri di depan mesin.
+    """
+    for b in bacaan:
+        if b["aktif"] and b.get("warna"):
+            return b["warna"]
+    return None
+
+
 def read_tower(frame, pembaca, now=None, peran=None, saat_gelap="run"):
     """Baca banyak menara sekaligus.
 
     pembaca : daftar PembacaMenara (satu per mesin)
     Return  : (hasil_per_mesin, ringkasan_jumlah)
     """
+    saat = time.time() if now is None else now
     out, counts = [], {"run": 0, "idle": 0, "stop": 0, "off": 0}
     for p in pembaca:
         bacaan = p.baca(frame, now)
         status, aktif = status_mesin(bacaan, peran, saat_gelap)
         counts[status] += 1
+
+        warna = warna_utama(bacaan)
+        kunci = (status, warna)
+        if p.status_kini != kunci:
+            p.status_kini = kunci
+            p.status_sejak = saat
+        # Segmen yang menyala tetapi warnanya BUKAN warna yang seharusnya
+        # ada di posisi itu. Hampir selalu berarti kotak menaranya meleset —
+        # arti dari posisi jadi salah, sementara semua angka ukurnya tetap
+        # terlihat wajar. Inilah satu-satunya cara menangkapnya tanpa mata.
+        salah_warna = [b["indikator"] for b in bacaan
+                       if b.get("warna_cocok") is False]
         out.append({
             "no": p.no,
             "status": status,
             "indikator": aktif,            # mis. ["putus_pakan"]
             "kedip": any(b["keadaan"] == KEDIP for b in bacaan),
+            # jam saat status/warna ini MULAI — bukan jam pembacaan sekarang
+            "sejak": p.status_sejak,
+            "warna": warna,
+            "warna_segmen": [b.get("warna") for b in bacaan],
+            "warna_janggal": salah_warna,
             "segmen": bacaan,
         })
     return out, counts
 
 
-def buat_pembaca(machines, indikator, ambang=None):
+def buat_pembaca(machines, indikator, ambang=None, warna_harapan=None):
     """Bangun daftar PembacaMenara dari konfigurasi kalibrasi.
 
     machines : [{"no": 1, "tower": [x, y, w, h]}, ...]
                Format lama {"no": 1, "lamp": [...]} tetap diterima dan
                diperlakukan sebagai menara satu segmen.
+    warna_harapan : warna fisik tiap posisi, urut atas->bawah. Dipakai
+               memeriksa kotak menara, bukan menentukan arti.
     """
     ambang = ambang or {}
     keluar = []
@@ -301,7 +467,11 @@ def buat_pembaca(machines, indikator, ambang=None):
         ind = m.get("indikator") or indikator
         if m.get("lamp") and not m.get("tower"):
             ind = ind[:1] or ["lampu"]      # format lama: satu segmen
-        keluar.append(PembacaMenara(m["no"], kotak, ind, **ambang))
+        wh = m.get("warna") or warna_harapan
+        if wh and len(wh) != len(ind):
+            wh = None                       # jangan memaksakan yang tak sepadan
+        keluar.append(PembacaMenara(m["no"], kotak, ind,
+                                    warna_harapan=wh, **ambang))
     return keluar
 
 

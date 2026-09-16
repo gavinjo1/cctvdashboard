@@ -26,7 +26,7 @@ import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
@@ -431,7 +431,7 @@ class Handler(BaseHTTPRequestHandler):
                                    "detector": shared.detector,
                                    "machines": shared.counts,
                                    "lamps": [{"no": l["no"], "status": l["status"],
-                                              "status": l["status"]}
+                                              "indikator": l["indikator"]}
                                              for l in shared.lamps],
                                    "ready": shared.jpeg is not None}).encode()
             self.send_response(200)

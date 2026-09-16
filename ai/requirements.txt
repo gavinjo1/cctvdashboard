@@ -16,6 +16,12 @@ ultralytics==8.3.61
 opencv-python-headless==4.11.0.86
 requests==2.32.3
 
+# Dibutuhkan ByteTrack (model.track) untuk penugasan Hungarian. Ultralytics
+# mencoba memasangnya sendiri saat pertama dipakai, tetapi gagal kalau `pip`
+# tidak ada di PATH — dan kegagalannya baru muncul saat runtime, bukan saat
+# pemasangan. Sebut eksplisit supaya ikut terpasang sejak awal.
+lap>=0.5.12
+
 # Untuk deployment yang dapat diulang, bekukan hasil pemasangan yang sudah
 # terbukti jalan di server pabrik, lalu pakai berkas itu:
 #     ./venv-ai/bin/pip freeze > ai/requirements.lock.txt

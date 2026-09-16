@@ -26,7 +26,7 @@
       "Worker tetap mencoba menyambung ulang sendiri."
     ],
     "fps_lampu": 30,
-    "_fps_lampu": "Sinyal menara berupa KEDIP. Pada 3 fps, kedip 3 Hz TIDAK TERDETEKSI sama sekali. Membaca lampu murah (tanpa GPU), jadi biarkan 25-30 fps meski deteksi orang jauh lebih lambat."
+    "_fps_lampu": "Sinyal menara berupa KEDIP. Pada 3 fps, kedip 3 Hz TIDAK TERDETEKSI sama sekali. Membaca lampu murah (tanpa GPU), jadi biarkan 25-30 fps. fps di atas hanya mengatur deteksi ORANG, yang mahal dan boleh jauh lebih lambat."
   },
   "cameras": [
     {
@@ -169,39 +169,48 @@
   ],
   "api_key": "ISI_SAMA_DENGAN_CCTV_API_KEY",
   "_menara": [
-    "indikator : URUT DARI ATAS KE BAWAH, sesuai susunan fisik menara.",
-    "            Arti datang dari POSISI, bukan warna.",
-    "            Bawaan mengikuti dokumentasi air-jet loom umum:",
-    "              biru   (atas)  loose weft - sisa benang pakan longgar",
-    "              merah         mesin stop - kerusakan mekanis / pengaman",
-    "              kuning        weft stop  - benang pakan putus",
-    "              hijau  (bawah) mesin jalan / siap",
-    "            TODO(pabrik): PASTIKAN ke bagian perawatan. Menara sering",
-    "            dikonfigurasi ulang per pabrik, dan tertukarnya kuning vs",
-    "            merah membuat putus pakan tercatat sebagai kerusakan mesin.",
+    "indikator : URUT ATAS -> BAWAH, sesuai susunan fisik menara.",
+    "            Toyota JAT810 di pabrik ini: merah, hijau, putih, kuning.",
+    "            Dipastikan 15 Sep 2026 dari layar 'Signal lamp' mesin dan",
+    "            dari vid16.mp4 (segmen ke-2 hijau + ke-3 putih menyala).",
     "",
-    "saat_gelap : status mesin saat TIDAK ADA segmen menyala.",
-    "  'run'  menara hanya menyala kalau ada sesuatu -> semua padam = JALAN",
-    "  'off'  hijau menyala terus saat produksi -> semua padam = mesin mati",
-    "  Salah memilih membuat status semua mesin TERBALIK, dan tetap terlihat",
-    "  masuk akal di layar. Pastikan dengan melihat mesin yang sedang jalan.",
+    "Arti yang SUDAH dipastikan operator:",
+    "  semua padam = mesin jalan normal  -> saat_gelap 'run'",
+    "  hijau       = benang PAKAN putus",
+    "  merah       = benang LUSI putus",
     "",
-    "tower  : kotak SELURUH tumpukan mika satu mesin, persen [x,y,lebar,tinggi].",
-    "         JANGAN sertakan tutup atas dan kaki hitam di bawahnya — kalau",
-    "         ikut terkotak, semua batas segmen bergeser dan keempat",
-    "         pembacaan salah dengan cara yang tetap terlihat wajar."
+    "TODO(pabrik): putih & kuning BELUM dipastikan. Baca langsung di layar",
+    "  Signal lamp mesin, jangan dari foto.",
+    "",
+    "TODO(pabrik): SATU WARNA DIPAKAI BANYAK SEBAB. Di layar Signal lamp,",
+    "  merah muncul untuk M/C TROUBLE, WASTE-SELVAGE STOP, dan FULL-LENO",
+    "  SELVAGE STOP sekaligus. Kamera hanya bisa bilang 'merah menyala',",
+    "  bukan sebabnya. Sebab persis harus dari data mesin, bukan lampu.",
+    "",
+    "warna_menara : warna FISIK tiap posisi, urut atas->bawah. Ini",
+    "  PEMERIKSA SILANG, bukan penentu arti — arti tetap dari posisi.",
+    "  Kalau segmen ke-2 menyala tapi pikselnya merah padahal di posisi",
+    "  itu seharusnya hijau, kotak menaranya meleset. Tanpa pemeriksaan",
+    "  ini, kotak yang meleset menghasilkan pembacaan yang SALAH tetapi",
+    "  seluruh angkanya tetap terlihat wajar."
   ],
   "indikator": [
-    "loose_weft",
-    "mesin_stop",
-    "putus_pakan",
-    "jalan"
+    "lusi_putus",
+    "pakan_putus",
+    "putih",
+    "kuning"
   ],
   "saat_gelap": "run",
   "peran_indikator": {
-    "loose_weft": "masalah",
-    "mesin_stop": "masalah",
-    "putus_pakan": "masalah",
-    "jalan": "normal"
-  }
+    "lusi_putus": "masalah",
+    "pakan_putus": "masalah",
+    "putih": "setup",
+    "kuning": "masalah"
+  },
+  "warna_menara": [
+    "merah",
+    "hijau",
+    "putih",
+    "kuning"
+  ]
 }

@@ -38,6 +38,17 @@
   --acc:rgb(var(--acc-rgb));
   --acc-2:#0550ae;       /* ujung gelap gradasi logo */
 
+  /* ---- warna FISIK lampu menara ----
+     Sengaja terpisah dari --run/--idle/--stop. Yang di atas itu arti
+     (jalan/idle/berhenti); yang di bawah ini warna mika yang benar-benar
+     terlihat di lantai. Di pabrik ini HIJAU = pakan putus, jadi memakai
+     --run untuk hijau akan membuat masalah terlihat seperti kabar baik. */
+  --lamp-merah:#e5484d;
+  --lamp-kuning:#f0b429;
+  --lamp-hijau:#30a46c;
+  --lamp-biru:#3b82f6;
+  --lamp-putih:#f2f4f7;
+
   /* Versi lebih gelap, khusus TULISAN kecil di atas semburat warnanya
      sendiri (pil status, lencana, pesan). Titik dan garis tetap memakai
      nilai di atas — bentuk penuh warna tidak butuh kontras teks. */
@@ -528,6 +539,39 @@ body{
 .mline-units i{width:7px;height:7px;border-radius:1.5px;background:var(--off)}
 .u-run{background:var(--run)!important} .u-idle{background:var(--idle)!important}
 .u-stop{background:var(--stop)!important}
+
+/* WARNA MESIN = WARNA LAMPU MENARANYA.
+   Yang dilihat PPIC di layar sama dengan yang dilihat operator saat berdiri
+   di depan mesin. Catatan: di pabrik ini HIJAU BERARTI PAKAN PUTUS, bukan
+   "sehat" — mesin yang sehat menaranya PADAM, jadi warnanya abu. */
+.u-lamp-merah{background:var(--lamp-merah)!important}
+.u-lamp-kuning{background:var(--lamp-kuning)!important}
+.u-lamp-hijau{background:var(--lamp-hijau)!important}
+.u-lamp-biru{background:var(--lamp-biru)!important}
+.u-lamp-putih{background:var(--lamp-putih)!important;
+  box-shadow:inset 0 0 0 1px rgba(var(--off-rgb),.55)}
+
+/* Belum ada kotak lampu untuk mesin ini: keadaannya TIDAK DIKETAHUI.
+   Dibedakan dari mesin jalan (abu polos) lewat garis miring, supaya
+   "belum terbaca" tidak pernah tersamar jadi "sehat". */
+.u-unknown{background:repeating-linear-gradient(45deg,
+  rgba(var(--off-rgb),.38) 0 2px, transparent 2px 4px)!important}
+.chip.unknown i, .pill.unknown{background:rgba(var(--off-rgb),.30)}
+
+/* Pada chip, yang berwarna adalah TITIKNYA, bukan seluruh kotak — kelas
+   u-lamp-* di atas mengenai <span> chip, sedangkan yang terlihat <i> di
+   dalamnya. Tanpa aturan ini chip tetap memakai warna status (merah) meski
+   lampu yang menyala putih. */
+.chip.u-lamp-merah i{background:var(--lamp-merah)!important}
+.chip.u-lamp-kuning i{background:var(--lamp-kuning)!important}
+.chip.u-lamp-hijau i{background:var(--lamp-hijau)!important}
+.chip.u-lamp-biru i{background:var(--lamp-biru)!important}
+.chip.u-lamp-putih i{background:var(--lamp-putih)!important;
+  box-shadow:inset 0 0 0 1px rgba(var(--off-rgb),.6)}
+.chip[class*="u-lamp-"]{background:transparent!important}
+.chip.u-unknown{background:transparent!important}
+.chip.u-unknown i{background:repeating-linear-gradient(45deg,
+  rgba(var(--off-rgb),.5) 0 2px, transparent 2px 4px)!important}
 .mline-alert{position:absolute;top:4px;right:4px;font-size:10px;color:var(--stop)}
 .map-legend{gap:14px;align-items:center;font-size:11px;color:var(--mut)}
 .map-legend span{display:flex;align-items:center;gap:6px}

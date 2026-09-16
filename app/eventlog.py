@@ -34,7 +34,8 @@ def durasi(detik: float) -> str:
 
 
 class Episode:
-    __slots__ = ("line_id", "machine_no", "status", "color", "started", "ended")
+    __slots__ = ("line_id", "machine_no", "status", "color", "started",
+                 "ended", "operator_at")
 
     def __init__(self, line_id, machine_no, status, color, started):
         self.line_id = line_id
@@ -43,11 +44,32 @@ class Episode:
         self.color = color
         self.started = started
         self.ended: Optional[datetime] = None
+        # Kapan operator PERTAMA terlihat selama episode ini berlangsung.
+        # MESIN MANA YANG DIPERBAIKI DITUNJUK OLEH LAMPUNYA, bukan oleh
+        # posisi orangnya: lampu yang padam itulah mesin yang beres. Cara ini
+        # tidak butuh zona lantai per mesin, dan tidak butuh mengenali
+        # "sedang menyambung benang" — mesinnya sendiri yang memberi tahu
+        # kapan pekerjaan selesai.
+        self.operator_at: Optional[datetime] = None
 
     @property
     def seconds(self) -> float:
         end = self.ended or datetime.now()
         return max(0.0, (end - self.started).total_seconds())
+
+    @property
+    def respons_sec(self) -> Optional[int]:
+        """Lampu menyala -> operator datang."""
+        if self.operator_at is None:
+            return None
+        return max(0, round((self.operator_at - self.started).total_seconds()))
+
+    @property
+    def perbaikan_sec(self) -> Optional[int]:
+        """Operator datang -> lampu padam. Kosong kalau tidak ada operator."""
+        if self.operator_at is None or self.ended is None:
+            return None
+        return max(0, round((self.ended - self.operator_at).total_seconds()))
 
     def row(self) -> dict:
         return {
@@ -59,16 +81,48 @@ class Episode:
             "ended_at": self.ended.isoformat(timespec="seconds")
             if self.ended else None,
             "duration_sec": round(self.seconds),
+            "operator_at": self.operator_at.isoformat(timespec="seconds")
+            if self.operator_at else None,
+            "respons_sec": self.respons_sec,
+            "perbaikan_sec": self.perbaikan_sec,
         }
 
     def teks(self) -> str:
         akhir = self.ended.strftime("%H:%M:%S") if self.ended else "  berjalan"
-        return "%s - %s  mesin %s  %-8s (%-7s) %10s" % (
+        # Pembagian waktu hanya ditulis kalau operator memang terlihat.
+        # Kolom kosong = tidak ada orang selama lampu menyala; itu keterangan
+        # yang berguna, bukan data yang hilang.
+        op = ""
+        if self.respons_sec is not None:
+            op = "  resp %s  perbaikan %s" % (
+                durasi(self.respons_sec).strip(),
+                durasi(self.perbaikan_sec or 0).strip())
+        return "%s - %s  mesin %s  %-8s (%-7s) %10s%s" % (
             self.started.strftime("%H:%M:%S"), akhir,
             str(self.machine_no).zfill(2),
             KATA.get(self.status, self.status),
             WARNA.get(self.color, self.color or "-"),
-            durasi(self.seconds))
+            durasi(self.seconds), op)
+
+
+#: Jam transisi yang lebih tua dari ini diabaikan — jam worker yang meleset
+#: jauh (zona waktu salah, NTP belum sinkron) lebih berbahaya daripada jeda
+#: kirim yang mau diperbaiki.
+BATAS_MUNDUR_DETIK = 3600
+
+
+def _jam_transisi(sejak, tiba: datetime) -> datetime:
+    """Ubah 'sejak' (epoch dari worker) jadi datetime yang bisa dipercaya."""
+    if sejak is None:
+        return tiba
+    try:
+        t = datetime.fromtimestamp(float(sejak))
+    except (TypeError, ValueError, OSError, OverflowError):
+        return tiba
+    selisih = (tiba - t).total_seconds()
+    if selisih < -5 or selisih > BATAS_MUNDUR_DETIK:
+        return tiba          # jam worker tidak masuk akal, jangan dipercaya
+    return t
 
 
 class EpisodeTracker:
@@ -94,6 +148,11 @@ class EpisodeTracker:
         closed = None
         if cur is not None:
             cur.ended = now
+            # Operator yang baru muncul SETELAH lampu padam bukan yang
+            # memperbaikinya. Tanpa penjagaan ini, respons bisa tercatat
+            # lebih lama daripada episodenya sendiri.
+            if cur.operator_at is not None and cur.operator_at > cur.ended:
+                cur.operator_at = None
             if cur.seconds >= self.min_seconds:
                 closed = cur
                 if self.on_close:
@@ -102,15 +161,42 @@ class EpisodeTracker:
         self.open[key] = Episode(line_id, int(machine_no), status, color, now)
         return closed
 
-    def observe_many(self, line_id: str, machines: List[dict]) -> int:
-        now = datetime.now()
+    def catat_operator(self, line_id: str, saat: datetime) -> None:
+        """Tandai operator terlihat: dicatat ke tiap episode BERMASALAH
+        yang sedang berjalan di line ini.
+
+        Kalau dua mesin bermasalah bersamaan, keduanya ikut tertandai —
+        kamera tidak bisa memastikan operator menangani yang mana. Yang
+        memisahkan nanti adalah lampu mana yang padam duluan.
+        """
+        for ep in self.open.values():
+            if ep.line_id != line_id or ep.status == "run":
+                continue
+            if ep.operator_at is None and saat >= ep.started:
+                ep.operator_at = saat
+
+    def observe_many(self, line_id: str, machines: List[dict],
+                     orang: int = 0, orang_sejak=None) -> int:
+        """Catat pembacaan sekelompok mesin.
+
+        JAM TRANSISI DIPAKAI KALAU DIKIRIM. Worker membaca lampu 25x per
+        detik dan tahu persis detik ke berapa lampu berubah, tetapi paketnya
+        berangkat tiap 10 detik. Kalau di sini dipakai datetime.now(), jam
+        itu hilang dan tiap episode meleset sampai sepanjang jeda kirim —
+        terlihat jelas di data lama: empat mesin "berhenti" pada detik yang
+        sama persis, berulang, selalu di kelipatan 10 detik.
+        """
+        tiba = datetime.now()
+        if orang > 0:
+            self.catat_operator(line_id, _jam_transisi(orang_sejak, tiba))
         n = 0
         for m in machines:
             no = m.get("no")
             if no is None:
                 continue
+            saat = _jam_transisi(m.get("sejak"), tiba)
             if self.observe(line_id, no, m.get("status", "off"),
-                            m.get("color", ""), now) is not None:
+                            m.get("color", ""), saat) is not None:
                 n += 1
         return n
 

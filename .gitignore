@@ -16,3 +16,21 @@ ai/zones.json
 ai/zones.generated.json
 deploy/go2rtc.local.yaml
 .DS_Store
+
+# berkas kerja SQLite
+data/*.db-wal
+data/*.db-shm
+
+# REKAMAN PABRIK — berisi wajah operator. Repo ini publik.
+# Videonya bukan bagian dari kode; simpan di NAS/Drive internal.
+ai/foto/vid*
+ai/foto/*.mp4
+ai/foto/*.mov
+
+# Database runtime — isinya data mesin, bukan kode
+data/history.db
+data/operators.json
+
+# hasil sementara alat uji
+kisi.jpg
+overlay.png

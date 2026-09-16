@@ -19,8 +19,6 @@ from .models import Alert, Camera, Group, Hall, Line, Machine, Position
 # Nama shift diambil dari ShiftSchedule (app/shifts.py), bukan dari sini.
 SHIFTS = list(settings.SHIFT_NAMES)
 
-STATUS_POOL = ["run", "run", "run", "run", "idle", "stop"]
-
 # TODO(pabrik): jumlah line per jenis mesin HARUS disamakan dengan pabrik.
 # Format: (kode, label, jumlah_line, hall). Kode dipakai sebagai awalan
 # line_id ("ajl-01") dan HARUS sama dengan nama stream di go2rtc.
@@ -108,6 +106,7 @@ def rollup(line: Line) -> None:
     if not ms:
         return
     line.mesin_run = sum(1 for m in ms if m.status == "run")
+    line.mesin_terbaca = sum(1 for m in ms if m.status != "unknown")
     runners = [m for m in ms if m.status == "run"]
     line.rpm = round(sum(m.rpm for m in runners) / len(runners)) if runners else 0
     line.eff = round(sum(m.eff for m in ms) / len(ms))
@@ -309,6 +308,8 @@ class BaseSource:
                 if m.status == "run" and st != "run":
                     m.stops += 1          # transisi jalan -> berhenti
                 m.status = st
+                m.color = _teks(item.get("color", ""), 16)
+                m.vision = True           # keadaan ini DIBACA, bukan dikarang
                 if st != "run":
                     m.rpm = 0
                 n += 1
@@ -316,10 +317,17 @@ class BaseSource:
         self._vision_until[line_id] = time.time() + self.VISION_LEASE
 
         # status line mengikuti mayoritas mesinnya
-        if line.machines:
-            run = sum(1 for m in line.machines if m.status == "run")
-            line.status = "run" if run > len(line.machines) / 2 else (
+        # Status line dihitung HANYA dari mesin yang benar-benar terbaca.
+        # Kalau mesin "unknown" ikut dihitung sebagai tidak-jalan, satu kotak
+        # lampu yang dikalibrasi membuat seluruh line tampak "Stop / Alarm"
+        # padahal sembilan mesin lainnya cuma belum pernah dibaca.
+        terbaca = [x for x in line.machines if x.status != "unknown"]
+        if terbaca:
+            run = sum(1 for x in terbaca if x.status == "run")
+            line.status = "run" if run > len(terbaca) / 2 else (
                 "stop" if run == 0 else "idle")
+        else:
+            line.status = "unknown"
         rollup(line)
         return n
 
@@ -384,7 +392,7 @@ class SimSource(BaseSource):
                     id=line_id,
                     name="{} {}".format(key.upper(), num),
                     type=key,
-                    status=random.choice(STATUS_POOL),
+                    status="unknown",   # sampai lampunya terbaca
                     operator="",        # tidak dikarang — lihat catatan di atas
                     shift=random.choice(SHIFTS),
                     mesin=settings.MESIN_PER_LINE,
@@ -403,10 +411,7 @@ class SimSource(BaseSource):
                     ],
                 )
                 self._assign_mo(line)
-                self._roll_machines(line)
-                for m in line.machines:
-                    m.output = random.randint(120, 480) if m.status == "run" \
-                        else random.randint(0, 140)
+                # Status mesin dibiarkan "unknown" sampai lampunya terbaca.
                 self._rollup(line)
                 group.lines.append(line)
             self.groups.append(group)
@@ -426,47 +431,28 @@ class SimSource(BaseSource):
             if mo not in used:
                 random.choice(line.machines).order_mo = mo
 
-    # ---------- helper ----------
-    @staticmethod
-    def _roll_machines(line: Line) -> None:
-        """Tentukan status tiap mesin sesuai status line."""
-        if line.status == "run":
-            target_run = random.randint(7, line.mesin)
-        elif line.status == "idle":
-            target_run = random.randint(3, 6)
-        else:
-            target_run = random.randint(0, 2)
-
-        idx = list(range(line.mesin))
-        random.shuffle(idx)
-        running = set(idx[:target_run])
-
-        for i, m in enumerate(line.machines):
-            if i in running:
-                m.status = "run"
-                m.rpm = random.randint(320, 560)
-                m.eff = random.randint(78, 97)
-                m.downtime = random.randint(0, 12)
-            else:
-                m.status = random.choice(["idle", "stop", "stop"])
-                m.rpm = 0
-                m.eff = random.randint(0, 55)
-                m.downtime = random.randint(15, 180)
-
     _rollup = staticmethod(rollup)
 
     def refresh(self) -> None:
+        """Perbarui nilai runtime.
+
+        STATUS MESIN TIDAK LAGI DIKARANG. Sebelumnya _roll_machines()
+        mengacak status tiap mesin, sehingga layar penuh mesin "jalan" dan
+        "stop" yang tidak pernah dibaca dari mana pun. Mesin yang belum
+        punya kotak lampu sekarang tetap "unknown" (abu-abu) — tidak tahu
+        itu jawaban yang jujur, dan jauh lebih berguna daripada tebakan
+        yang terlihat meyakinkan.
+
+        ANGKA PRODUKSI JUGA TIDAK DIKARANG. Sebelumnya output tiap mesin
+        ditambah acak tiap detak, sehingga layar menunjukkan belasan ribu
+        meter kain yang tidak pernah ditenun siapa pun. Sekarang tetap nol.
+
+        TODO(pabrik): output, RPM, dan efisiensi harus datang dari data mesin
+        (Modbus/OPC-UA, atau sistem Data Collection yang sudah ada di loom).
+        Kamera tidak bisa menghitungnya — lampu menara tidak membawa angka
+        produksi. Isi di LiveSource.refresh(), bukan di sini.
+        """
         for line in self.all_lines():
-            if self.vision_active(line.id):
-                continue        # data asli dari AI worker — jangan disimulasi
-            if random.random() < 0.15:
-                line.status = random.choice(STATUS_POOL)
-            self._roll_machines(line)
-            for m in line.machines:
-                if m.status == "run":
-                    m.output += random.randint(0, 4)
-                else:
-                    m.stops += 1 if random.random() < 0.05 else 0
             self._rollup(line)
 
 

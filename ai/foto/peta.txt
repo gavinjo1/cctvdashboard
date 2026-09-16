@@ -1,0 +1,36 @@
+# Peta line -> berkas. Dibaca otomatis oleh foto_kamera.py, jadi
+# cukup:  ./venv-ai/bin/python ai/foto_kamera.py --dir ai/foto --lacak
+#
+# Format:  <line_id> = <nama berkas>      ( # untuk catatan )
+# --map di baris perintah menimpa baris di sini.
+#
+# Dashboard punya 18 line: rapier-01..06, ajl-01..09, shuttle-01..03
+# (LAYOUT di app/source.py). Kesembilan slot AJL sudah penuh.
+
+ajl-01 = vid1.mp4          # 832x464  73 s
+ajl-02 = vid2.mp4          # 832x464  600 s
+ajl-03 = vid3.jpeg         # foto diam
+ajl-04 = vid9.mp4          # 848x478  64 s
+ajl-05 = vid10.mp4         # 848x478  28 s
+ajl-06 = vid11.mp4         # 848x478  42 s
+ajl-07 = vid12.mp4         # PORTRAIT 478x850 — dibilah lebar di kotak 16:9
+ajl-08 = vid13.mp4         # PORTRAIT, cuma 6 s, mengulang terus
+ajl-09 = vid16.mp4         # PORTRAIT — CONTOH LAMPU: hijau + putih menyala
+
+# Sisa berkas dipasang ke line rapier yang masih kosong.
+# CATATAN: isinya rekaman AIR JET LOOM (JAT810/JAT910), bukan rapier —
+# labelnya di dashboard tidak akan cocok dengan yang terlihat di layar.
+# Ini penambal demo supaya line-nya tidak kosong, bukan pemetaan benar.
+rapier-01 = vid14.mp4      # PORTRAIT, 6 s, mengulang terus
+rapier-02 = vid15.jpeg     # foto diam
+
+# Sisa line dashboard. Rekamannya habis, jadi berkas yang sama dipakai
+# ulang — satu pemutar dibagi beberapa line, bukan didekode ulang.
+# Line yang berbagi menampilkan gambar yang sama persis.
+rapier-03 = vid9.mp4
+rapier-04 = vid10.mp4
+rapier-05 = vid11.mp4
+rapier-06 = vid12.mp4
+shuttle-01 = vid1.mp4
+shuttle-02 = vid13.mp4
+shuttle-03 = vid2.mp4

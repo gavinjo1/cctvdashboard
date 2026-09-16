@@ -43,6 +43,18 @@ log = logging.getLogger("ai")
 
 PERSON_CLASS = 0          # class 'person' pada model COCO
 
+# Pemuatan model digilir: dua thread yang memuat bobot yang sama berbarengan
+# sempat menabrak langkah fuse di ultralytics.
+_KUNCI_MUAT = threading.Lock()
+
+# Jeda sebelum alert yang GAGAL TERKIRIM dicoba lagi. Jauh lebih pendek dari
+# cooldown_seconds: kegagalan jaringan tidak boleh menyembunyikan kejadian.
+JEDA_ULANG_ALERT = 30
+
+#: jeda antar laporan "warna tidak cocok" per kamera (detik). Kalau kotaknya
+#: memang meleset, keadaannya menetap — tidak perlu diulang tiap frame.
+LAPOR_WARNA_JANGGAL = 300
+
 #: Urutan indikator menara, ATAS -> BAWAH. Artinya datang dari POSISI,
 #: bukan warna. Ditimpa per line lewat "indikator" di zones.json.
 #:
@@ -50,7 +62,34 @@ PERSON_CLASS = 0          # class 'person' pada model COCO
 #: hijau dari atas). TODO(pabrik): PASTIKAN ke bagian perawatan — menara
 #: andon sering dikonfigurasi ulang per pabrik, dan salah memetakan kuning
 #: vs merah membuat putus pakan tercatat sebagai kerusakan mesin.
-INDIKATOR_BAWAAN = ["loose_weft", "mesin_stop", "putus_pakan", "jalan"]
+#: Urutan segmen menara ATAS -> BAWAH pada Toyota JAT810 di pabrik ini.
+#: Dipastikan 15 Sep 2026 dari layar "Signal lamp" mesin (4 kolom lampu:
+#: merah, hijau, putih, kuning) dan dari vid16.mp4 — menara di sana
+#: menyalakan segmen ke-2 (hijau) dan ke-3 (putih), yang cocok dengan
+#: urutan kolom itu.
+#:
+#: Arti yang SUDAH dipastikan operator:
+#:   semua padam  mesin jalan normal   (karena itu SAAT_GELAP_BAWAAN="run")
+#:   hijau        benang PAKAN putus
+#:   merah        benang LUSI putus
+#:
+#: TODO(pabrik): putih dan kuning BELUM dipastikan. Layar Signal lamp
+#: menunjukkan putih dipakai CLOTH DOFFING dan kuning dipakai WARP OUT /
+#: FOREMAN CALL ON, tetapi fotonya miring dan buram — jangan dipercaya
+#: sebelum dibaca langsung di layar mesin.
+INDIKATOR_BAWAAN = ["lusi_putus", "pakan_putus", "putih", "kuning"]
+
+#: TODO(pabrik): SATU WARNA DIPAKAI BANYAK SEBAB. Di layar Signal lamp,
+#: merah muncul untuk M/C TROUBLE, WASTE-SELVAGE STOP, dan FULL-LENO
+#: SELVAGE STOP sekaligus. Kamera hanya bisa melaporkan "merah menyala",
+#: bukan sebab persisnya. Sebab yang tepat harus datang dari data mesin
+#: (Modbus/OPC-UA), bukan dari lampu.
+PERAN_BAWAAN = {
+    "lusi_putus": "masalah",
+    "pakan_putus": "masalah",
+    "putih": "setup",       # TODO(pabrik): doffing = berhenti terencana?
+    "kuning": "masalah",    # TODO(pabrik): panggil foreman = masalah?
+}
 
 #: Status mesin saat TIDAK ADA segmen menyala. Lihat catatan di ai/lamp.py —
 #: ini harus dipastikan dengan melihat mesin yang sedang berproduksi.
@@ -99,7 +138,7 @@ def box_center_bottom(box):
 class CameraWorker(threading.Thread):
     """Satu thread per kamera."""
 
-    def __init__(self, cam_cfg, defaults, dashboard_url, model):
+    def __init__(self, cam_cfg, defaults, dashboard_url, model_path):
         super().__init__(daemon=True, name=cam_cfg["line_id"])
         self.cfg = {**defaults, **cam_cfg}
         self.line_id = cam_cfg["line_id"]
@@ -111,11 +150,14 @@ class CameraWorker(threading.Thread):
         key = self.cfg.get("api_key") or ""
         if key:
             self.headers["X-API-Key"] = key
-        self.model = model
+        self.model_path = model_path
+        self.model = None             # dimuat di thread-nya sendiri, lihat run()
         self.stop_flag = threading.Event()
 
         # state penghitung waktu
         self.last_seen_person = time.time()
+        self.orang_terakhir = 0       # dipakai pada frame yang tidak dideteksi
+        self.orang_sejak = None       # kapan kehadiran SEKARANG dimulai
         self.crowd_since = None
         self.red_since = None
         self.last_alert = {}          # label -> waktu terakhir dikirim
@@ -123,9 +165,12 @@ class CameraWorker(threading.Thread):
         self.indikator = self.cfg.get("indikator", INDIKATOR_BAWAAN)
         # PembacaMenara menyimpan riwayat kedip, jadi HARUS dipakai ulang
         # antar frame. Dibangun ulang hanya kalau kalibrasi berubah.
+        self.warna_harapan = self.cfg.get("warna_menara")
         self.pembaca = buat_pembaca(self.lamps, self.indikator,
-                                    self.cfg.get("ambang_lampu"))
+                                    self.cfg.get("ambang_lampu"),
+                                    self.warna_harapan)
         self.baseline_siap = False
+        self.warna_terakhir_lapor = 0.0
         self.zone = self.cfg.get("zone", [])
         self.zone_px = None
         self._warned_zone = False
@@ -184,7 +229,8 @@ class CameraWorker(threading.Thread):
         if lamps:
             self.lamps = lamps
             self.pembaca = buat_pembaca(self.lamps, self.indikator,
-                                        self.cfg.get("ambang_lampu"))
+                                        self.cfg.get("ambang_lampu"),
+                                        self.warna_harapan)
             self.baseline_siap = False
         elif self.lamps:
             log.warning("[%s] kalibrasi dashboard tidak berisi ROI lampu — "
@@ -203,7 +249,6 @@ class CameraWorker(threading.Thread):
         now = time.time()
         if now - self.last_alert.get(label, 0) < cooldown:
             return                      # jangan spam alert yang sama
-        self.last_alert[label] = now
 
         payload = {
             "line_id": self.line_id,
@@ -215,26 +260,50 @@ class CameraWorker(threading.Thread):
             "severity": severity,
             "detected_at": datetime.now().strftime("%H:%M:%S"),
         }
+        # Cooldown dipasang HANYA kalau alert benar-benar sampai. Kalau
+        # dipasang sebelum POST, satu permintaan gagal (dashboard restart,
+        # jaringan putus sesaat) membuang alert itu dan menutup label yang
+        # sama selama cooldown penuh — mesin berhenti tanpa penanganan tidak
+        # dilaporkan sampai 10 menit, dan tidak ada yang tahu.
         try:
             r = requests.post(f"{self.dashboard}/api/alerts", json=payload,
                               headers=self.headers, timeout=5)
             if r.ok:
+                self.last_alert[label] = now
                 log.info("[%s] ALERT terkirim: %s (%ds)", self.line_id, label, duration)
             else:
+                # Ditolak isi/kunci: mengulang secepatnya hanya akan
+                # membanjiri log dengan penolakan yang sama.
+                self.last_alert[label] = now
                 log.warning("[%s] dashboard menolak: %s %s",
                             self.line_id, r.status_code, r.text[:120])
         except requests.RequestException as e:
-            log.warning("[%s] gagal kirim alert: %s", self.line_id, e)
+            # Gagal kirim = coba lagi sebentar lagi, bukan cooldown penuh.
+            self.last_alert[label] = now - cooldown + JEDA_ULANG_ALERT
+            log.warning("[%s] gagal kirim alert: %s — coba lagi %ds",
+                        self.line_id, e, JEDA_ULANG_ALERT)
 
     def push_machine_status(self, results):
-        """Kirim status 10 mesin (hasil baca lampu) ke dashboard."""
+        """Kirim status mesin (hasil baca lampu) ke dashboard.
+
+        JAM TRANSISI IKUT DIKIRIM. Paket ini berangkat tiap status_interval
+        detik, tetapi lampu dibaca 25x per detik — jadi worker tahu persis
+        detik ke berapa merah menyala. Kalau yang dikirim hanya statusnya,
+        dashboard terpaksa memakai jam kedatangan paket dan setiap catatan
+        meleset sepanjang jeda pengiriman. Pada kejadian ~1 menit, itu 17%.
+        """
         now = time.time()
         if now - self.last_status_push < self.cfg.get("status_interval", 10):
             return
         self.last_status_push = now
-        body = {"machines": [{"no": r["no"], "status": r["status"],
+        body = {"orang": self.orang_terakhir,
+                # jam kehadiran dimulai, bukan jam paket ini dikirim
+                "orang_sejak": self.orang_sejak,
+                "machines": [{"no": r["no"], "status": r["status"],
                               "indikator": r["indikator"],
-                              "kedip": r["kedip"]} for r in results]}
+                              "kedip": r["kedip"],
+                              "color": r.get("warna") or "",
+                              "sejak": r.get("sejak")} for r in results]}
         try:
             requests.post(f"{self.dashboard}/api/lines/{self.line_id}/machines",
                           json=body, headers=self.headers, timeout=5)
@@ -319,8 +388,14 @@ class CameraWorker(threading.Thread):
         return poly_from_percent(self.zone, w, h)
 
     # ---------- pemrosesan satu frame ----------
-    def process_frame(self, frame, now):
-        """Deteksi orang, baca lampu tower, lalu jalankan aturan alert."""
+    def process_frame(self, frame, now, deteksi_orang=True):
+        """Baca lampu tower, deteksi orang (lebih jarang), jalankan alert.
+
+        DUA LAJU. Lampu dibaca tiap frame karena sinyalnya KEDIP — pada 3 fps,
+        kedip 3 Hz tidak terdeteksi sama sekali. Deteksi orang jauh lebih mahal
+        (YOLO) dan tidak perlu secepat itu, jadi dijalankan sesuai `fps`
+        sementara lampu mengikuti `fps_lampu`.
+        """
         self.refresh_calibration()
 
         h, w = frame.shape[:2]
@@ -328,9 +403,9 @@ class CameraWorker(threading.Thread):
             self.zone_px = self.zone_polygon(w, h)
 
         # --- deteksi orang (hanya bila zona sudah dikalibrasi) ---
-        n_in_zone = 0
         zone_ok = self.zone_px is not None
-        if zone_ok:
+        if zone_ok and deteksi_orang:
+            n_in_zone = 0
             res = self.model.predict(
                 frame, classes=[PERSON_CLASS], verbose=False,
                 conf=self.cfg["min_confidence"],
@@ -339,6 +414,16 @@ class CameraWorker(threading.Thread):
                 px, py = box_center_bottom(box)
                 if cv2.pointPolygonTest(self.zone_px, (px, py), False) >= 0:
                     n_in_zone += 1
+            if n_in_zone > 0 and self.orang_terakhir == 0:
+                self.orang_sejak = now        # kehadiran baru dimulai
+            elif n_in_zone == 0:
+                self.orang_sejak = None
+            self.orang_terakhir = n_in_zone
+        else:
+            # Frame antara: pakai hitungan orang terakhir. Aturan alert bekerja
+            # pada rentang menit, jadi jeda beberapa ratus milidetik tidak
+            # mengubah hasilnya — sementara membaca lampu tiap frame WAJIB.
+            n_in_zone = self.orang_terakhir
 
         # --- baca lampu tower tiap mesin ---
         n_stop = 0
@@ -355,9 +440,23 @@ class CameraWorker(threading.Thread):
 
             results, counts = read_tower(
                 frame, self.pembaca, now,
-                peran=self.cfg.get("peran_indikator"),
+                peran=self.cfg.get("peran_indikator", PERAN_BAWAAN),
                 saat_gelap=self.cfg.get("saat_gelap", SAAT_GELAP_BAWAAN))
             n_stop = counts["stop"]
+
+            # Kotak menara yang meleset TIDAK terlihat dari angka ukurnya —
+            # pembacaan tetap masuk akal, cuma artinya salah. Warna piksel
+            # adalah satu-satunya cara menangkapnya tanpa melihat gambar.
+            janggal = [(r["no"], r["warna_janggal"]) for r in results
+                       if r.get("warna_janggal")]
+            if janggal and now - self.warna_terakhir_lapor >= LAPOR_WARNA_JANGGAL:
+                self.warna_terakhir_lapor = now
+                log.warning("[%s] WARNA TIDAK COCOK di mesin %s — kotak menara "
+                            "kemungkinan meleset; arti dari posisi jadi salah "
+                            "meski angkanya wajar. Periksa kalibrasi.",
+                            self.line_id,
+                            ", ".join("%s%s" % (no, ind) for no, ind in janggal))
+
             self.push_machine_status(results)
 
         self.evaluate(n_in_zone, n_stop, now, zone_ok=zone_ok)
@@ -382,8 +481,12 @@ class CameraWorker(threading.Thread):
 
         log.info("[%s] stream terhubung", self.line_id)
         self.zone_px = None
-        interval = 1.0 / max(1, self.cfg["fps"])
+        # Lampu memimpin lajunya; deteksi orang menumpang lebih jarang.
+        fps_lampu = self.cfg.get("fps_lampu") or self.cfg["fps"]
+        interval = 1.0 / max(1, fps_lampu)
+        interval_orang = 1.0 / max(1, self.cfg["fps"])
         last_run = 0.0
+        last_orang = 0.0
         beruntun = 0                        # kegagalan frame berturut-turut
 
         try:
@@ -401,8 +504,11 @@ class CameraWorker(threading.Thread):
                 if not ok or frame is None:
                     continue
 
+                perlu_orang = now - last_orang >= interval_orang
+                if perlu_orang:
+                    last_orang = now
                 try:
-                    self.process_frame(frame, now)
+                    self.process_frame(frame, now, deteksi_orang=perlu_orang)
                 except Exception:
                     self.errors += 1
                     beruntun += 1
@@ -432,7 +538,13 @@ class CameraWorker(threading.Thread):
         apa-apa, dan dashboard terus menampilkan keadaan terakhir line ini
         seolah kameranya masih bekerja. Kamera yang buta diam-diam adalah
         kegagalan paling berbahaya di sistem ini.
+
+        SATU MODEL PER KAMERA, dimuat di sini. Satu objek YOLO yang dipakai
+        bersama beberapa thread menabrak langkah fuse di ultralytics
+        ('Conv' object has no attribute 'bn') pada frame pertama.
         """
+        with _KUNCI_MUAT:
+            self.model = YOLO(self.model_path)
         while not self.stop_flag.is_set():
             try:
                 self.session()
@@ -495,8 +607,7 @@ def main():
                  "(zones.json dipakai sebagai cadangan)",
                  defaults.get("calibration_interval", 30))
 
-    log.info("Memuat model %s ...", args.model)
-    model = YOLO(args.model)          # 1 model dipakai bersama semua thread
+    log.info("Model %s — satu salinan per kamera", args.model)
 
     api_key = cfg.get("api_key", "")
     if not api_key:
@@ -506,7 +617,7 @@ def main():
         cam.setdefault("api_key", api_key)
 
     workers = [
-        CameraWorker(cam, defaults, cfg["dashboard_url"], model)
+        CameraWorker(cam, defaults, cfg["dashboard_url"], args.model)
         for cam in cameras
     ]
     for w in workers:
@@ -529,7 +640,7 @@ def main():
                     log.error("[%s] thread berhenti setelah %d frame — "
                               "dijalankan ulang", line_id, h["frames"])
                     baru = CameraWorker(cameras[i], defaults,
-                                        cfg["dashboard_url"], model)
+                                        cfg["dashboard_url"], args.model)
                     baru.start()
                     workers[i] = baru
                     macet.discard(line_id)

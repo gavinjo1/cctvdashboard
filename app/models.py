@@ -7,6 +7,7 @@ STATUS_TEXT = {
     "idle": "Idle / Setting",
     "stop": "Stop / Alarm",
     "off": "Offline",
+    "unknown": "Belum terbaca",
 }
 
 
@@ -24,7 +25,11 @@ class Machine:
     no: int
     name: str
     order_mo: str = ""        # nomor MO yang sedang dikerjakan mesin ini
-    status: str = "run"
+    # "unknown" = BELUM ADA PEMBACAAN LAMPU untuk mesin ini. Sengaja bukan
+    # "run": mesin yang tidak diketahui keadaannya tidak boleh terlihat sehat.
+    status: str = "unknown"
+    color: str = ""           # warna lampu yang menyala ("merah"/"hijau"/...)
+    vision: bool = False      # True kalau status ini datang dari baca lampu
     rpm: int = 0
     eff: int = 0              # persen
     output: int = 0           # meter

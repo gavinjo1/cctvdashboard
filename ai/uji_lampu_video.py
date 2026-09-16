@@ -43,11 +43,9 @@ import sys
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lamp import (PembacaMenara, bagi_segmen, rect_from_percent,   # noqa: E402
-                  KEDIP, NYALA, PADAM)
+from lamp import PembacaMenara, KEDIP, NYALA, PADAM   # noqa: E402
 
 
 def simpan_kisi(video, detik, langkah, keluar):
@@ -101,6 +99,10 @@ def main():
     # ke a.video dan alat ini akan menimpa rekaman masukannya sendiri.
     ap.add_argument("--keluar-video", dest="keluar_video", metavar="BERKAS",
                     help="simpan rekaman beranotasi ke berkas BARU")
+    ap.add_argument("--overlay", metavar="BERKAS", default="overlay.png",
+                    help="simpan gambar batas segmen untuk DIPERIKSA MATA. "
+                         "Ini langkah yang paling sering dilewati dan paling "
+                         "sering jadi sumber kesalahan")
     a = ap.parse_args()
 
     if a.kisi:
@@ -133,6 +135,34 @@ def main():
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         tulis = cv2.VideoWriter(a.keluar_video, cv2.VideoWriter_fourcc(*"mp4v"),
                                 fps, (w, h))
+
+    # Overlay dulu, SEBELUM angka apa pun dipercaya. Kotak yang meleset
+    # menghasilkan angka yang salah tetapi tetap terlihat masuk akal —
+    # satu-satunya cara menangkapnya adalah melihat batasnya di gambar.
+    ok0, f0 = cap.read()
+    if ok0:
+        vis = f0.copy()
+        H0, W0 = vis.shape[:2]
+        tp = (int(tower[0]/100*W0), int(tower[1]/100*H0),
+              int(tower[2]/100*W0), int(tower[3]/100*H0))
+        seg = tp[3] / float(len(indikator))
+        cv2.rectangle(vis, (tp[0], tp[1]), (tp[0]+tp[2], tp[1]+tp[3]), (255,0,255), 2)
+        for k, nama in enumerate(indikator):
+            yk = int(tp[1] + k*seg)
+            cv2.line(vis, (tp[0]-14, yk), (tp[0]+tp[2]+14, yk), (0,255,255), 1)
+            cv2.putText(vis, nama, (tp[0]+tp[2]+18, yk+16),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,255,255), 1, cv2.LINE_AA)
+        cv2.line(vis, (tp[0]-14, tp[1]+tp[3]), (tp[0]+tp[2]+14, tp[1]+tp[3]), (255,0,255), 2)
+        if max(vis.shape[:2]) < 700:
+            vis = cv2.resize(vis, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
+        cv2.imwrite(a.overlay, vis)
+        print("OVERLAY: %s  <-- PERIKSA INI DULU sebelum percaya angkanya." % a.overlay)
+        print("         Tiap garis kuning harus jatuh tepat di batas mika.")
+        print()
+        # Buka ulang, jangan seek: pada BERKAS GAMBAR, seek ke frame 0 gagal
+        # dan pembacaan utama jadi kosong tanpa pesan kesalahan apa pun.
+        cap.release()
+        cap = cv2.VideoCapture(a.video)
 
     print("menara %s | indikator (atas->bawah): %s | %.0f fps"
           % (tower, ", ".join(indikator), fps))

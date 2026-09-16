@@ -19,7 +19,7 @@ import sqlite3
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 log = logging.getLogger("cctv")
 
@@ -92,7 +92,10 @@ CREATE TABLE IF NOT EXISTS status_episode (
     color        TEXT,               -- green | yellow | red | off
     started_at   TEXT    NOT NULL,
     ended_at     TEXT,
-    duration_sec INTEGER NOT NULL
+    duration_sec INTEGER NOT NULL,
+    operator_at  TEXT,               -- kapan operator pertama terlihat
+    respons_sec  INTEGER,            -- lampu nyala -> operator datang
+    perbaikan_sec INTEGER            -- operator datang -> lampu padam
 );
 CREATE INDEX IF NOT EXISTS ix_ep_line ON status_episode(line_id, started_at);
 
@@ -159,9 +162,12 @@ class HistoryStore:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO status_episode (line_id,machine_no,status,color,"
-                "started_at,ended_at,duration_sec) VALUES (?,?,?,?,?,?,?)",
+                "started_at,ended_at,duration_sec,operator_at,respons_sec,"
+                "perbaikan_sec) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (ep["line_id"], ep["machine_no"], ep["status"], ep["color"],
-                 ep["started_at"], ep["ended_at"], ep["duration_sec"]))
+                 ep["started_at"], ep["ended_at"], ep["duration_sec"],
+                 ep.get("operator_at"), ep.get("respons_sec"),
+                 ep.get("perbaikan_sec")))
             self._conn.commit()
 
     def episodes(self, line_id: str, hours: int = 0,

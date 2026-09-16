@@ -210,7 +210,24 @@ function setAnaTab(tab) {
   else render();
 }
 
-const statusText = s => ({ run: "Running", idle: "Idle", stop: "Stop", off: "Offline" }[s] || s);
+const statusText = s => ({ run: "Running", idle: "Idle", stop: "Stop",
+                           off: "Offline", unknown: "Belum terbaca" }[s] || s);
+
+/* Kelas warna satu mesin. WARNA LAMPU MENANG atas status, supaya yang di
+   layar sama dengan yang terlihat di menara mesin. Mesin yang lampunya
+   belum dikalibrasi tidak boleh ikut berwarna — "belum terbaca" harus
+   kelihatan beda dari "sehat". */
+const LAMPU_SAH = ["merah", "kuning", "hijau", "biru", "putih"];
+function unitClass(m) {
+  if (m.status === "unknown") return "u-unknown";
+  if (m.color && LAMPU_SAH.includes(m.color)) return "u-lamp-" + m.color;
+  return "u-" + m.status;
+}
+function unitTitle(m) {
+  const asal = m.vision ? (m.color ? "lampu " + m.color : "menara padam")
+                        : "belum ada kotak lampu";
+  return m.name + " — " + statusText(m.status) + " (" + asal + ")";
+}
 const effClass = e => e >= 80 ? "good" : e >= 60 ? "mid" : "bad";
 
 /* Amankan teks sebelum disisipkan ke innerHTML.
@@ -533,8 +550,8 @@ function openDetail(id) {
 function moChips(line, g) {
   return g.machines.map(no => {
     const m = line.machines.find(x => x.no === no);
-    return `<span class="chip ${esc(m.status)}" data-m="${num(no)}" title="${
-      esc(m.name)} — ${esc(statusText(m.status))} — ${num(m.eff)}%">
+    return `<span class="chip ${esc(m.status)} ${esc(unitClass(m))}"
+      data-m="${num(no)}" title="${esc(unitTitle(m))}">
       <i></i>${String(no).padStart(2, "0")}</span>`;
   }).join("");
 }
@@ -604,8 +621,8 @@ function patchDetail() {
       const m = l.machines.find(x => x.no === no);
       const chip = box.querySelector(`.chip[data-m="${no}"]`);
       if (chip) {
-        setClass(chip, `chip ${m.status}`);
-        chip.title = `${m.name} — ${statusText(m.status)} — ${m.eff}%`;
+        setClass(chip, `chip ${m.status} ${unitClass(m)}`);
+        chip.title = unitTitle(m);
       }
     });
   });
@@ -1128,8 +1145,8 @@ function renderMap() {
         <span class="mcam ${l.cam.online ? "" : "off"}">&#9679;</span>
       </div>
       <div class="mline-units">
-        ${l.machines.map(m => `<i class="u-${esc(m.status)}" data-m="${num(m.no)}"
-            title="${esc(m.name)} — ${esc(m.order_mo)}"></i>`).join("")}
+        ${l.machines.map(m => `<i class="${esc(unitClass(m))}" data-m="${num(m.no)}"
+            title="${esc(unitTitle(m))}"></i>`).join("")}
       </div>
       <span class="mline-alert"${l.alert ? "" : " hidden"}>&#9888;</span>
     </div>`).join("");

@@ -22,7 +22,7 @@ from .config import settings
 from .eventlog import EpisodeTracker, buat_teks
 from .report import PeriodAccumulator, build_report
 from .shifts import ResetTracker, ShiftSchedule
-from .source import build_source
+from .source import build_source, _angka
 from .store import HistoryStore
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -354,7 +354,14 @@ async def api_resolve_alert(alert_id: str, payload: dict = Body(default={})):
 async def api_machine_status(line_id: str, payload: dict = Body(...)):
     """Status mesin hasil pembacaan lampu tower oleh AI worker.
 
-    Body: {"machines": [{"no": 1, "status": "run", "color": "green"}, ...]}
+    Body: {"orang": 1,
+           "machines": [{"no": 1, "status": "run", "color": "merah",
+                         "sejak": 1758000000.0}, ...]}
+
+    `sejak` = jam transisi menurut worker (epoch). Dipakai menggantikan jam
+    kedatangan paket, supaya catatan tidak meleset sepanjang jeda kirim.
+    `orang` = jumlah orang di zona line saat itu; dipakai menandai episode
+    bermasalah yang sedang berjalan bahwa operator sudah datang.
     """
     machines = payload.get("machines")
     if not isinstance(machines, list):
@@ -365,7 +372,9 @@ async def api_machine_status(line_id: str, payload: dict = Body(...)):
 
     # catat perubahan warna sebagai episode untuk pengumpulan data uji
     if settings.EVENT_LOG in ("vision", "all"):
-        tracker.observe_many(line_id, machines)
+        tracker.observe_many(line_id, machines,
+                             orang=_angka(payload.get("orang"), 0, 999),
+                             orang_sejak=payload.get("orang_sejak"))
     await manager.broadcast(snapshot())
     return {"status": "ok", "updated": n}
 
