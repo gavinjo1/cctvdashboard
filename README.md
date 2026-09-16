@@ -1,7 +1,7 @@
 # CCTV Monitoring Dashboard
 
 Dashboard monitoring CCTV + produksi untuk pabrik weaving.
-Status mesin dibaca dari **lampu menara** lewat kamera, bukan dikarang.
+Status mesin dibaca dari **lampu menara** lewat kamera.
 
 ---
 
