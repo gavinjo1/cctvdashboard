@@ -147,7 +147,7 @@ def baca_peta(folder: Path):
     """Baca peta line->berkas dari <folder>/peta.txt.
 
     Ada supaya menjalankan 9 line tidak berarti mengetik 9 kali --map.
-    Nama berkas dibiarkan apa adanya (vid9.mp4, bukan ajl-04.mp4) — kalau
+    Nama berkas dibiarkan apa adanya (vid4.mp4, bukan ajl-04.mp4) — kalau
     berkasnya harus diganti nama agar terbaca, jejak asalnya hilang dan
     menambah sumber baru berarti menata ulang seluruh folder.
     """

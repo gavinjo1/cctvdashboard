@@ -37,6 +37,10 @@
       <svg viewBox="0 0 24 24"><path d="m9 4-6 2.5v13L9 17l6 2.5 6-2.5V4l-6 2.5L9 4Z"/><path d="M9 4v13"/><path d="M15 6.5v13"/></svg>
       <span>Map</span>
     </button>
+    <button class="rail-btn" data-view="mo" title="Portal MO">
+      <svg viewBox="0 0 24 24"><path d="M5 4h11l3 3v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"/><path d="M8 11h8"/><path d="M8 15h5"/></svg>
+      <span>MO</span>
+    </button>
     <button class="rail-btn" data-view="analysis" title="Analysis">
       <svg viewBox="0 0 24 24"><path d="M4 19h16"/><path d="M7 16V9"/><path d="M12 16V5"/><path d="M17 16v-4"/></svg>
       <span>Analysis</span>
@@ -218,6 +222,19 @@
         </div>
       </div>
       <div class="map-wrap"><div class="map" id="map"></div></div>
+    </section>
+
+    <!-- ---------- VIEW: PORTAL MO ---------- -->
+    <section class="view" id="viewMo" hidden>
+      <div class="content-head">
+        <h2>Portal MO</h2>
+        <span class="count" id="moPortalCount"></span>
+        <div class="view-actions">
+          <span class="mo-hint">Ketik nomor MO di tiap mesin, lalu
+            <b>Simpan line</b>. Kosongkan untuk melepas penugasan.</span>
+        </div>
+      </div>
+      <div class="mo-portal" id="moPortal"></div>
     </section>
 
     <!-- ---------- VIEW: ANALYSIS ---------- -->

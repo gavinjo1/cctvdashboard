@@ -151,9 +151,9 @@ PITA_WARNA = (
 
 #: Ambang pada PERSENTIL KE-90 SATURASI, bukan pada rata-rata. Di bawah ini
 #: lampu disebut PUTIH. Terukur pada rekaman pabrik:
-#:     lampu putih (vid16)  S90 =  48
+#:     lampu putih (vid8)  S90 =  48
 #:     lampu merah (vid3)   S90 = 192
-#:     lampu hijau (vid16)  S90 = 232
+#:     lampu hijau (vid8)  S90 = 232
 SAT_PUTIH = 100.0
 
 #: Piksel ikut dinilai kalau V-nya setidaknya segini dari v90 segmen.
@@ -248,6 +248,14 @@ class PembacaMenara:
         # paket, tiap catatan meleset sepanjang jeda pengiriman.
         self.status_kini = None
         self.status_sejak = None
+        # Warna terakhir yang benar-benar TERLIHAT per segmen. Lampu berkedip
+        # gelap separuh waktu; kalau warna hanya diambil saat piksel sedang
+        # terang, warnanya bolak-balik "hijau" <-> None beberapa kali per
+        # detik. Itu me-reset status_sejak terus-menerus dan melahirkan
+        # episode baru hampir tiap paket — justru pada keadaan SETUP, yang
+        # memang ditandai kedipan.
+        self._warna_terakhir = [None] * self.n
+        self._yakin_terakhir = [0.0] * self.n
 
     # ---------- kalibrasi ----------
     def rekam_baseline(self, frame):
@@ -289,8 +297,20 @@ class PembacaMenara:
             # padam berarti mesin jalan, keadaan normal di pabrik ini adalah
             # semua segmen gelap — jadi biaya hue mendekati nol sepanjang
             # hari dan hanya dibayar saat ada yang perlu dilihat.
-            warna, yakin = (warna_segmen(ukur[i][2], v[i]) if terang
-                            else (None, 0.0))
+            # Warna diukur saat terang, lalu DIPERTAHANKAN selama segmen
+            # masih dianggap aktif — termasuk fase gelap sebuah kedipan.
+            # Dilupakan begitu segmen benar-benar padam.
+            if terang:
+                warna, yakin = warna_segmen(ukur[i][2], v[i])
+                self._warna_terakhir[i] = warna
+                self._yakin_terakhir[i] = yakin
+            elif keadaan in (NYALA, KEDIP):
+                warna = self._warna_terakhir[i]
+                yakin = self._yakin_terakhir[i]
+            else:
+                warna, yakin = None, 0.0
+                self._warna_terakhir[i] = None
+                self._yakin_terakhir[i] = 0.0
             cocok = None
             if warna and self.warna_harapan:
                 harap = self.warna_harapan[i]

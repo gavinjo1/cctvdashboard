@@ -57,7 +57,7 @@ Gambar jadi patah-patah 2 detik sekali, tapi semua kamera muncul.
 ### Tambah pelacak operator
 
 ```bash
-./venv-ai/bin/python ai/foto_kamera.py --dir ai/foto --lacak ajl-01,ajl-04
+./venv-ai/bin/python ai/foto_kamera.py --dir ai/foto --lacak ajl-07,ajl-14
 ```
 
 `--lacak` tanpa nama line = semua. **Berat**: 9 video terlacak.
@@ -170,10 +170,18 @@ terdeteksi sama sekali.
 
 ```bash
 ./venv-ai/bin/python ai/uji_worker.py        # aturan pengiriman alert
-./venv-ai/bin/python ai/uji_warna_lampu.py   # pembacaan warna lampu
+./venv-ai/bin/python ai/uji_warna_lampu.py   # warna lampu + kedip
+./venv/bin/python app/uji_eventlog.py        # aturan episode & operator
 ```
 
-Keduanya tanpa dashboard, kamera, atau model.
+Ketiganya tanpa dashboard, kamera, atau model.
+
+Rantai penuh (lampu nyala → operator masuk → lampu padam → log), lewat HTTP
+sungguhan. Butuh `./run-demo.sh` jalan:
+
+```bash
+./venv/bin/python app/uji_rantai.py
+```
 
 Uji pembacaan lampu di video sendiri:
 

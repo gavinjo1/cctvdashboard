@@ -35,7 +35,7 @@ def durasi(detik: float) -> str:
 
 class Episode:
     __slots__ = ("line_id", "machine_no", "status", "color", "started",
-                 "ended", "operator_at")
+                 "ended", "operator_at", "terlihat", "terpotong")
 
     def __init__(self, line_id, machine_no, status, color, started):
         self.line_id = line_id
@@ -51,11 +51,31 @@ class Episode:
         # "sedang menyambung benang" — mesinnya sendiri yang memberi tahu
         # kapan pekerjaan selesai.
         self.operator_at: Optional[datetime] = None
+        # Kapan episode ini TERAKHIR dikonfirmasi masih berlangsung. Kalau
+        # worker berhenti, episode tetap menganga; tanpa penanda ini, paket
+        # pertama setelah worker hidup lagi menutupnya dengan durasi sepanjang
+        # seluruh gangguan — mesin "berhenti 8 jam" yang tidak pernah terjadi.
+        self.terlihat: datetime = started
+        self.terpotong = False
 
     @property
     def seconds(self) -> float:
         end = self.ended or datetime.now()
         return max(0.0, (end - self.started).total_seconds())
+
+    def tutup(self, now: datetime, batas_senjang: float) -> None:
+        """Tutup episode, dengan memperhitungkan worker yang sempat mati.
+
+        Kalau sejak konfirmasi terakhir sudah lewat `batas_senjang`, kita
+        TIDAK tahu kapan lampunya benar-benar padam — yang kita tahu hanya
+        sampai kapan ia masih menyala. Ditutup di situ dan ditandai
+        terpotong: durasinya jadi batas bawah, bukan karangan.
+        """
+        if (now - self.terlihat).total_seconds() > batas_senjang:
+            self.ended = self.terlihat
+            self.terpotong = True
+        else:
+            self.ended = now
 
     @property
     def respons_sec(self) -> Optional[int]:
@@ -110,6 +130,11 @@ class Episode:
 #: kirim yang mau diperbaiki.
 BATAS_MUNDUR_DETIK = 3600
 
+#: Kalau sebuah episode tidak dikonfirmasi selama ini, worker dianggap sempat
+#: mati. Longgar terhadap jeda kirim biasa (status_interval 10 detik) tapi
+#: jauh lebih pendek dari gangguan sungguhan.
+BATAS_SENJANG_DETIK = 120
+
 
 def _jam_transisi(sejak, tiba: datetime) -> datetime:
     """Ubah 'sejak' (epoch dari worker) jadi datetime yang bisa dipercaya."""
@@ -128,11 +153,13 @@ def _jam_transisi(sejak, tiba: datetime) -> datetime:
 class EpisodeTracker:
     """Melacak episode terbuka tiap mesin dan menutupnya saat warna berubah."""
 
-    def __init__(self, on_close=None, min_seconds: int = 0):
+    def __init__(self, on_close=None, min_seconds: int = 0,
+                 batas_senjang: float = BATAS_SENJANG_DETIK):
         # episode yang sedang berjalan, kunci (line_id, machine_no)
         self.open: Dict[Tuple[str, int], Episode] = {}
         self.on_close = on_close          # dipanggil saat satu episode ditutup
         self.min_seconds = min_seconds    # episode lebih pendek dari ini diabaikan
+        self.batas_senjang = batas_senjang
 
     def observe(self, line_id: str, machine_no: int, status: str,
                 color: str = "", now: Optional[datetime] = None) -> Optional[Episode]:
@@ -141,13 +168,24 @@ class EpisodeTracker:
         key = (line_id, int(machine_no))
         cur = self.open.get(key)
 
-        # warna & status masih sama -> tidak ada yang perlu dicatat
+        # warna & status masih sama -> tidak ada yang perlu dicatat,
+        # tetapi kehadirannya dikonfirmasi: inilah yang membedakan
+        # "masih menyala" dari "worker sudah lama diam".
         if cur is not None and cur.status == status and cur.color == color:
+            cur.terlihat = max(cur.terlihat, now)
             return None
 
         closed = None
         if cur is not None:
-            cur.ended = now
+            cur.tutup(now, self.batas_senjang)
+            if cur.terpotong:
+                log.warning(
+                    "[%s] mesin %s: episode %s ditutup di konfirmasi terakhir "
+                    "(%s) — tidak ada kiriman selama %.0f detik, jadi kapan "
+                    "lampunya padam TIDAK diketahui. Durasi ini batas bawah.",
+                    cur.line_id, cur.machine_no, cur.status,
+                    cur.terlihat.strftime("%H:%M:%S"),
+                    (now - cur.terlihat).total_seconds())
             # Operator yang baru muncul SETELAH lampu padam bukan yang
             # memperbaikinya. Tanpa penjagaan ini, respons bisa tercatat
             # lebih lama daripada episodenya sendiri.
@@ -172,8 +210,14 @@ class EpisodeTracker:
         for ep in self.open.values():
             if ep.line_id != line_id or ep.status == "run":
                 continue
-            if ep.operator_at is None and saat >= ep.started:
-                ep.operator_at = saat
+            if ep.operator_at is not None:
+                continue
+            # Operator yang SUDAH berdiri di line sebelum lampu menyala itu
+            # kasus paling sering di pabrik. Kalau kehadirannya dimulai lebih
+            # dulu, waktu responsnya nol — bukan "tidak ada operator". Dulu
+            # penjagaan `saat >= ep.started` membuang kasus ini diam-diam dan
+            # episodenya tercatat tanpa respons sama sekali.
+            ep.operator_at = max(saat, ep.started)
 
     def observe_many(self, line_id: str, machines: List[dict],
                      orang: int = 0, orang_sejak=None) -> int:
@@ -215,6 +259,20 @@ class EpisodeTracker:
 
 
 # ---------------------------------------------------------------- berkas teks
+def _kolom_operator(r: dict) -> str:
+    """Bagian waktu operator untuk satu baris log, kalau ada.
+
+    Kosong berarti tidak ada orang terdeteksi selama lampu menyala — itu
+    keterangan yang berguna (mesin berhenti tanpa ditangani), bukan data
+    yang hilang.
+    """
+    if r.get("respons_sec") is None:
+        return ""
+    return "  resp %s  perbaikan %s" % (
+        durasi(r["respons_sec"]).strip(),
+        durasi(r.get("perbaikan_sec") or 0).strip())
+
+
 def buat_teks(line_name: str, line_id: str, rows: List[dict],
               berjalan: List[Episode] = None) -> str:
     """Susun isi berkas .txt dari episode yang tersimpan."""
@@ -248,12 +306,12 @@ def buat_teks(line_name: str, line_id: str, rows: List[dict],
             B("[ %s ]" % tgl)
         akhir = datetime.fromisoformat(r["ended_at"]).strftime("%H:%M:%S") \
             if r["ended_at"] else "  berjalan"
-        B("  %s - %s  mesin %s  %-8s (%-7s) %10s" % (
+        B("  %s - %s  mesin %s  %-8s (%-7s) %10s%s" % (
             mulai.strftime("%H:%M:%S"), akhir,
             str(r["machine_no"]).zfill(2),
             KATA.get(r["status"], r["status"]),
             WARNA.get(r["color"], r["color"] or "-"),
-            durasi(r["duration_sec"])))
+            durasi(r["duration_sec"]), _kolom_operator(r)))
 
     # ---- bagian 2: dikelompokkan per mesin ----
     B("")
@@ -277,9 +335,10 @@ def buat_teks(line_name: str, line_id: str, rows: List[dict],
             mulai = datetime.fromisoformat(r["started_at"])
             akhir = datetime.fromisoformat(r["ended_at"]).strftime("%H:%M:%S") \
                 if r["ended_at"] else "berjalan"
-            B("   %-8s jam %s - %s   (%s)" % (
+            B("   %-8s jam %s - %s   (%s)%s" % (
                 KATA.get(r["status"], r["status"]),
-                mulai.strftime("%H:%M:%S"), akhir, durasi(r["duration_sec"])))
+                mulai.strftime("%H:%M:%S"), akhir, durasi(r["duration_sec"]),
+                _kolom_operator(r)))
 
     # ---- bagian 3: yang masih berjalan ----
     if berjalan:

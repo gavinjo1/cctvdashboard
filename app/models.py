@@ -67,12 +67,16 @@ class Line:
     """1 line = 10 mesin = 1 operator = 1 kamera."""
     id: str
     name: str
-    type: str                 # rapier | ajl | shuttle
+    type: str                 # kode jenis mesin; pabrik ini semuanya "ajl"
     status: str = "run"
     operator: str = ""
     shift: str = ""
     mesin: int = 10
     mesin_run: int = 0
+    # Berapa mesin yang keadaannya BENAR-BENAR dibaca dari lampu. Bedanya
+    # dengan `mesin`: "2 dari 10 jalan" dan "2 dari 3 yang terbaca jalan"
+    # adalah dua kalimat yang sangat berbeda bagi orang yang melihat layar.
+    mesin_terbaca: int = 0
     rpm: int = 0
     eff: int = 0
     output: int = 0

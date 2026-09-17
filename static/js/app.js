@@ -221,6 +221,10 @@ const LAMPU_SAH = ["merah", "kuning", "hijau", "biru", "putih"];
 function unitClass(m) {
   if (m.status === "unknown") return "u-unknown";
   if (m.color && LAMPU_SAH.includes(m.color)) return "u-lamp-" + m.color;
+  // Menara padam = mesin jalan -> ABU, bukan hijau. Di pabrik ini hijau
+  // berarti PAKAN PUTUS, jadi memakai warna "run" membuat mesin sehat dan
+  // mesin bermasalah tampil dengan warna yang sama persis.
+  if (m.vision && m.status === "run") return "u-padam";
   return "u-" + m.status;
 }
 function unitTitle(m) {
@@ -374,18 +378,22 @@ function setView(v) {
   if (view === v) return;
   if (typeof calClose === "function" && v !== "detail") calClose();
   view = v;
-  ["viewCamera", "viewDetail", "viewMap", "viewAnalysis"].forEach(id => $(id).hidden = true);
+  ["viewCamera", "viewDetail", "viewMap", "viewMo", "viewAnalysis"]
+    .forEach(id => $(id).hidden = true);
   const active = { camera: "viewCamera", detail: "viewDetail",
-                   map: "viewMap", analysis: "viewAnalysis" }[v];
+                   map: "viewMap", mo: "viewMo", analysis: "viewAnalysis" }[v];
   const el = $(active);
   el.hidden = false;
   el.classList.remove("fade");           // restart animasi masuk
   void el.offsetWidth;
   el.classList.add("fade");
 
-  document.querySelector(".analytics").hidden = (v === "detail");
-  $("sidebar").hidden = (v === "map");
-  document.querySelector(".layout").classList.toggle("no-side", v === "map");
+  // Portal MO memakai lebar penuh: isinya tabel 18 line x 10 mesin, dan
+  // KPI di atas tidak ada gunanya saat sedang mengetik nomor order.
+  const penuh = (v === "map" || v === "mo");
+  document.querySelector(".analytics").hidden = (v === "detail" || v === "mo");
+  $("sidebar").hidden = penuh;
+  document.querySelector(".layout").classList.toggle("no-side", penuh);
 
   document.querySelectorAll(".rail-btn[data-view]").forEach(b => {
     const target = v === "detail" ? "camera" : v;
@@ -399,10 +407,11 @@ function setView(v) {
    ================================================================ */
 function render() {
   renderKPI();
-  if (view !== "map") renderTree();
+  if (view !== "map" && view !== "mo") renderTree();
   if (view === "camera")        renderCards();
   else if (view === "detail")   renderDetail();
   else if (view === "map")      renderMap();
+  else if (view === "mo")       renderMoPortal();
   else if (view === "analysis" && anaTab === "live") renderAnalysis();
   lastSig = signature();
 }
@@ -439,8 +448,100 @@ function renderTree() {
   tree.querySelectorAll(".mch").forEach(el => {
     el.onclick = e => {
       e.stopPropagation();
+      // Klik nama line di sidebar langsung membuka layar kameranya, bukan
+      // sekadar menyaring grid jadi satu kartu kecil. Itu yang diharapkan
+      // orang saat menunjuk satu line: mau melihat kameranya.
       sel = { group: null, line: el.dataset.line };
-      render();
+      openDetail(el.dataset.line);
+    };
+  });
+}
+
+/* ---------------- PORTAL MO ----------------
+   Nomor MO dulu dikarang acak tiap dashboard menyala. Di sini PPIC
+   mengisinya sendiri dan isiannya bertahan.
+
+   Disimpan PER LINE, bukan per ketikan: mengirim tiap huruf ke server akan
+   membanjiri jaringan dan membuat setengah line tersimpan setengah jalan
+   kalau koneksi putus di tengah. Tombol "Simpan line" mengirim keadaan
+   LENGKAP satu line sekaligus. */
+function renderMoPortal() {
+  const wrap = $("moPortal");
+  const lines = ALL;
+  setText($("moPortalCount"), `${lines.length} line`);
+
+  setHTML(wrap, lines.map(l => `
+    <div class="mo-line" data-line="${esc(l.id)}">
+      <div class="mo-line-head">
+        <b>${esc(l.name)}</b>
+        <span class="mo-line-area">${esc(l.area)}</span>
+        <span class="mo-line-sisa" data-sisa></span>
+        <span class="mo-line-aksi">
+          <button class="btn mo-isi-semua" type="button">Isi semua</button>
+          <button class="btn primary mo-simpan" type="button">Simpan line</button>
+        </span>
+      </div>
+      <div class="mo-grid">
+        ${l.machines.map(m => `
+          <label class="mo-sel">
+            <span class="mo-no">${String(m.no).padStart(2, "0")}</span>
+            <input class="mo-input" type="text" maxlength="32"
+                   data-m="${num(m.no)}" placeholder="—"
+                   value="${esc(m.order_mo || "")}">
+          </label>`).join("")}
+      </div>
+    </div>`).join(""));
+
+  wrap.querySelectorAll(".mo-line").forEach(box => {
+    const lineId = box.dataset.line;
+    const inputs = [...box.querySelectorAll(".mo-input")];
+
+    const hitungSisa = () => {
+      const kosong = inputs.filter(i => !i.value.trim()).length;
+      const el = box.querySelector("[data-sisa]");
+      setText(el, kosong ? `${kosong} mesin belum ditugasi` : "semua ditugasi");
+      el.classList.toggle("ok", !kosong);
+    };
+    inputs.forEach(i => { i.oninput = hitungSisa; });
+    hitungSisa();
+
+    // "Isi semua" menyalin isian PERTAMA yang tidak kosong ke seluruh mesin.
+    // Satu line biasanya mengerjakan satu order; mengetik nomor yang sama
+    // sepuluh kali adalah cara paling gampang salah ketik satu di antaranya.
+    box.querySelector(".mo-isi-semua").onclick = () => {
+      const sumber = inputs.find(i => i.value.trim());
+      if (!sumber) {
+        dlgInfo("Isi semua", "Ketik dulu satu nomor MO di salah satu mesin.");
+        return;
+      }
+      inputs.forEach(i => { i.value = sumber.value.trim(); });
+      hitungSisa();
+    };
+
+    box.querySelector(".mo-simpan").onclick = async btn => {
+      const tombol = box.querySelector(".mo-simpan");
+      const mesin = {};
+      inputs.forEach(i => { mesin[i.dataset.m] = i.value.trim(); });
+      tombol.disabled = true;
+      const labelAsli = tombol.textContent;
+      setText(tombol, "Menyimpan...");
+      try {
+        const r = await fetch(`/api/lines/${encodeURIComponent(lineId)}/mo`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ machines: mesin }),
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          throw new Error(e.detail || `HTTP ${r.status}`);
+        }
+        setText(tombol, "Tersimpan");
+        setTimeout(() => { setText(tombol, labelAsli); tombol.disabled = false; }, 1200);
+      } catch (e) {
+        tombol.disabled = false;
+        setText(tombol, labelAsli);
+        dlgInfo("Gagal menyimpan MO", String(e.message || e));
+      }
     };
   });
 }
@@ -660,10 +761,18 @@ function infoBlock(l) {
  *   "sim"   mode simulasi: memang tidak ada AI, bukan kerusakan
  */
 function visionState(l) {
-  if (SOURCE_MODE !== "live") return "sim";
   const umur = l.vision_age;
-  if (umur === null || umur === undefined) return "kosong";
-  return umur > VISION_LEASE ? "basi" : "ok";
+  // Data dari AI dinilai BASI tanpa memandang SOURCE_MODE. Dulu di sini ada
+  // jalan pintas `if (SOURCE_MODE !== "live") return "sim"`, dan itu menjadi
+  // berbahaya begitu simulator berhenti menimpa status mesin: mode "sim"
+  // sekarang membawa pembacaan lampu SUNGGUHAN, jadi worker yang mati
+  // meninggalkan warna terakhir membeku di layar tanpa satu pun peringatan.
+  // (LiveSource juga masih NotImplementedError, jadi "live" tak tercapai —
+  // jalan pintas itu membuat peringatannya jadi kode mati.)
+  if (umur !== null && umur !== undefined) {
+    return umur > VISION_LEASE ? "basi" : "ok";
+  }
+  return SOURCE_MODE === "live" ? "kosong" : "sim";
 }
 
 function panelNoVision(l, state) {
@@ -1015,7 +1124,13 @@ function askOperator() {
   return dlgOpen({
     title: "Siapa yang menangani?",
     body,
-    actions: [{ label: "Batal", value: null }],
+    // TOMBOL SIMPAN WAJIB ADA. Dulu di sini hanya ada "Batal", dan satu-
+    // satunya cara mengirim nama adalah menekan Enter — tanpa petunjuk apa
+    // pun di layar. Tanpa daftar operator (data/operators.json tidak wajib
+    // ada), orang mengetik namanya lalu mentok: alert tidak bisa ditutup,
+    // dan tidak ada yang salah kelihatan di layar.
+    actions: [{ label: "Batal", value: null },
+              { label: "Simpan", kind: "primary", value: null }],
     onMount: (box, selesai) => {
       const input = box.querySelector("#dlgOpInput");
       const list = box.querySelector("#dlgOpList");
@@ -1069,6 +1184,26 @@ function askOperator() {
         return false;
       }
       gambar();
+
+      // Tombol "Simpan" dicegat supaya melewati pemeriksaan yang SAMA dengan
+      // Enter — nama kosong atau di luar daftar tetap ditolak, bukan lolos
+      // hanya karena dikirim lewat tombol.
+      //
+      // Tombolnya hidup di #dlgActions, bukan di dalam `box` (onMount hanya
+      // menerima badan dialog), jadi dicari dari sana.
+      const tombolSimpan = document.querySelector('#dlgActions [data-i="1"]');
+      if (tombolSimpan) {
+        tombolSimpan.onclick = () => {
+          if (!punyaDaftar) return pilih(input.value);
+          const q = input.value.trim().toLowerCase();
+          const cocok = OPERATOR_LIST.filter(n => n.toLowerCase().includes(q));
+          if (cocek1(cocok, input.value)) return;
+          setText(box.querySelector("#dlgOpNote"), cocok.length
+            ? `${cocok.length} nama cocok — pilih salah satu dari daftar.`
+            : "Nama itu tidak ada di daftar operator.");
+        };
+      }
+      input.focus();
     },
   });
 }

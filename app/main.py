@@ -18,11 +18,12 @@ from fastapi.templating import Jinja2Templates
 
 from .auth import operators, require_api_key
 from .calibration import CalibrationStore
+from .mo import MoStore, bersihkan_mo
 from .config import settings
 from .eventlog import EpisodeTracker, buat_teks
 from .report import PeriodAccumulator, build_report
 from .shifts import ResetTracker, ShiftSchedule
-from .source import build_source, _angka
+from .source import build_source, rollup, _angka
 from .store import HistoryStore
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -39,6 +40,14 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 source = build_source()
 calibration = CalibrationStore(settings.CALIBRATION_FILE)
+mo_store = MoStore(settings.MO_FILE)
+
+# MO yang tersimpan ditempelkan SEKALI saat start. Tanpa ini, penugasan
+# yang diketik PPIC kemarin hilang tiap dashboard di-restart dan layar
+# kembali kosong tanpa penjelasan.
+for _line in source.all_lines():
+    mo_store.terapkan(_line)
+    rollup(_line)
 history = HistoryStore(settings.DB_FILE)
 schedule = ShiftSchedule()
 resetter = ResetTracker(schedule)
@@ -424,6 +433,54 @@ async def api_calibration_delete(line_id: str):
     log.warning("Kalibrasi %s dihapus", line_id)
     await manager.broadcast(snapshot())
     return {"status": "ok"}
+
+
+@app.get("/api/mo")
+async def api_mo_all():
+    """Semua penugasan MO. Dipakai portal MO saat dibuka."""
+    return JSONResponse(mo_store.all())
+
+
+@app.put("/api/lines/{line_id}/mo")
+async def api_mo_set(line_id: str, payload: dict = Body(...)):
+    """Simpan penugasan MO satu line dari portal.
+
+    Body: {"machines": {"1": "MO-5285", "2": "MO-5285", "7": ""}}
+
+    Nilai kosong MELEPAS mesin itu dari penugasan — itu cara membatalkan
+    salah isi. Mesin yang tidak disebut ikut terlepas: badan permintaan
+    adalah keadaan LENGKAP line itu, bukan tambalan sebagian.
+    """
+    line = source.get_line(line_id)
+    if line is None:
+        raise HTTPException(status_code=404, detail="Line tidak ditemukan")
+
+    mesin = payload.get("machines")
+    if not isinstance(mesin, dict):
+        raise HTTPException(status_code=400,
+                            detail="'machines' harus objek {no: mo}")
+
+    sah = {str(m.no) for m in line.machines}
+    asing = [k for k in mesin if str(k) not in sah]
+    if asing:
+        raise HTTPException(
+            status_code=400,
+            detail="Nomor mesin di luar line ini: %s" % ", ".join(sorted(asing)))
+
+    ditolak = [str(k) for k, v in mesin.items()
+               if str(v or "").strip() and not bersihkan_mo(v)]
+    if ditolak:
+        raise HTTPException(
+            status_code=400,
+            detail="Nomor MO tidak sah di mesin %s (maksimal 32 karakter, "
+                   "huruf/angka/spasi/. _ - /)" % ", ".join(sorted(ditolak)))
+
+    isi = mo_store.set(line_id, mesin)
+    mo_store.terapkan(line)
+    rollup(line)
+    await manager.broadcast(snapshot())
+    log.info("MO line %s diperbarui: %d mesin ditugasi", line_id, len(isi))
+    return {"status": "ok", "machines": isi}
 
 
 @app.get("/api/operators")

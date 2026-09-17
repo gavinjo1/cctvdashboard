@@ -172,7 +172,7 @@
     "indikator : URUT ATAS -> BAWAH, sesuai susunan fisik menara.",
     "            Toyota JAT810 di pabrik ini: merah, hijau, putih, kuning.",
     "            Dipastikan 15 Sep 2026 dari layar 'Signal lamp' mesin dan",
-    "            dari vid16.mp4 (segmen ke-2 hijau + ke-3 putih menyala).",
+    "            dari vid8.mp4 (segmen ke-2 hijau + ke-3 putih menyala).",
     "",
     "Arti yang SUDAH dipastikan operator:",
     "  semua padam = mesin jalan normal  -> saat_gelap 'run'",

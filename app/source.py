@@ -22,10 +22,19 @@ SHIFTS = list(settings.SHIFT_NAMES)
 # TODO(pabrik): jumlah line per jenis mesin HARUS disamakan dengan pabrik.
 # Format: (kode, label, jumlah_line, hall). Kode dipakai sebagai awalan
 # line_id ("ajl-01") dan HARUS sama dengan nama stream di go2rtc.
+#: Kode & label satu-satunya jenis mesin. Pabrik ini seluruhnya air jet loom
+#: (Toyota JAT810/JAT910), jadi tidak ada lagi pemisahan rapier/shuttle.
+KODE_MESIN = "ajl"
+LABEL_MESIN = "AJL"
+
+#: (hall, jumlah line di hall itu). Line dinomori BERURUTAN menyeberangi
+#: hall: hall-a dapat ajl-01..06, hall-b ajl-07..15, hall-c ajl-16..18.
+#: Nomornya satu deret untuk seluruh pabrik — itu yang dipakai orang di
+#: lantai, dan menomori ulang tiap hall akan melahirkan dua "ajl-01".
 LAYOUT = [
-    ("rapier", "Rapier", 6, "hall-a"),
-    ("ajl", "AJL", 9, "hall-b"),
-    ("shuttle", "Shuttle", 3, "hall-c"),
+    ("hall-a", 6),
+    ("hall-b", 9),
+    ("hall-c", 3),
 ]
 
 # TODO(pabrik): denah ini KARANGAN. Ukur tata letak asli lalu sesuaikan
@@ -33,9 +42,9 @@ LAYOUT = [
 # oleh _grid_pos(); kalau susunan aslinya tidak berupa grid rapi, isi
 # `pos` tiap line secara manual di LiveSource.bootstrap().
 HALLS = [
-    Hall(key="hall-a", label="Hall A — Rapier", x=4, y=8, w=44, h=40),
-    Hall(key="hall-b", label="Hall B — AJL", x=53, y=8, w=43, h=84),
-    Hall(key="hall-c", label="Hall C — Shuttle", x=4, y=56, w=44, h=36),
+    Hall(key="hall-a", label="Hall A", x=4, y=8, w=44, h=40),
+    Hall(key="hall-b", label="Hall B", x=53, y=8, w=43, h=84),
+    Hall(key="hall-c", label="Hall C", x=4, y=56, w=44, h=36),
 ]
 HALL_BY_KEY = {h.key: h for h in HALLS}
 
@@ -115,6 +124,10 @@ def rollup(line: Line) -> None:
     line.mo_groups = group_by_mo(ms)
 
 
+#: Label kelompok untuk mesin yang belum diberi MO di portal.
+MO_KOSONG = "Belum ditugasi"
+
+
 def group_by_mo(machines: List[Machine]) -> List[dict]:
     """Kelompokkan mesin berdasarkan MO.
 
@@ -123,7 +136,11 @@ def group_by_mo(machines: List[Machine]) -> List[dict]:
     """
     buckets: Dict[str, List[Machine]] = {}
     for m in machines:
-        buckets.setdefault(m.order_mo, []).append(m)
+        # Mesin tanpa MO dikumpulkan dengan nama yang bisa dibaca, bukan
+        # string kosong. Kelompok tanpa judul di layar terlihat seperti
+        # kerusakan tampilan, padahal artinya jelas dan penting: mesin ini
+        # terlewat saat pembagian order.
+        buckets.setdefault(m.order_mo or MO_KOSONG, []).append(m)
 
     out = []
     for mo, group in buckets.items():
@@ -136,8 +153,9 @@ def group_by_mo(machines: List[Machine]) -> List[dict]:
             "eff": round(sum(m.eff for m in group) / len(group)) if group else 0,
             "stops": sum(m.stops for m in group),
         })
-    # MO dengan mesin terbanyak di atas, lalu urut nomor MO
-    out.sort(key=lambda g: (-g["count"], g["mo"]))
+    # MO dengan mesin terbanyak di atas, lalu urut nomor MO. "Belum
+    # ditugasi" selalu paling bawah — itu sisa, bukan order.
+    out.sort(key=lambda g: (g["mo"] == MO_KOSONG, -g["count"], g["mo"]))
     return out
 
 
@@ -305,8 +323,13 @@ class BaseSource:
                 continue
             st = item.get("status")
             if st in ("run", "idle", "stop", "off"):
+                # Transisi jalan -> berhenti. Dari "unknown" TIDAK dihitung:
+                # kalau dashboard baru menyala dan mesinnya sudah bermasalah,
+                # kita tidak tahu ia sempat jalan atau tidak. Akibatnya
+                # hitungan stop kehilangan satu kejadian per mesin yang sudah
+                # merah saat startup — lebih baik kurang daripada mengarang.
                 if m.status == "run" and st != "run":
-                    m.stops += 1          # transisi jalan -> berhenti
+                    m.stops += 1
                 m.status = st
                 m.color = _teks(item.get("color", ""), 16)
                 m.vision = True           # keadaan ini DIBACA, bukan dikarang
@@ -382,11 +405,15 @@ class SimSource(BaseSource):
 
     def bootstrap(self) -> None:
         self.groups = []
-        for key, label, count, hall_key in LAYOUT:
+        # SATU grup untuk seluruh pabrik, nomor berurutan menyeberangi hall.
+        group = Group(key=KODE_MESIN, label=LABEL_MESIN)
+        urut = 0
+        for hall_key, count in LAYOUT:
             hall = HALL_BY_KEY[hall_key]
-            group = Group(key=key, label=label)
             for i in range(1, count + 1):
-                num = str(i).zfill(2)
+                urut += 1
+                key = KODE_MESIN
+                num = str(urut).zfill(2)
                 line_id = "{}-{}".format(key, num)
                 line = Line(
                     id=line_id,
@@ -414,22 +441,25 @@ class SimSource(BaseSource):
                 # Status mesin dibiarkan "unknown" sampai lampunya terbaca.
                 self._rollup(line)
                 group.lines.append(line)
-            self.groups.append(group)
+        self.groups.append(group)
 
     # ---------- helper ----------
     @staticmethod
     def _assign_mo(line: Line) -> None:
-        """Tiap line mengerjakan 1-3 MO, dibagi acak ke 10 mesin."""
-        n_mo = random.choice([1, 2, 2, 3, 3])
-        codes = random.sample(range(1000, 9999), n_mo)
-        mos = ["MO-{}".format(c) for c in codes]
+        """Tidak mengarang MO lagi.
+
+        Dulu tiap line diberi 1-3 nomor MO acak yang dibagikan ke mesinnya.
+        Nomor itu berganti setiap dashboard menyala dan tidak pernah cocok
+        dengan kertas order di tangan PPIC — angka yang terlihat resmi tapi
+        tidak menunjuk apa pun.
+
+        MO sekarang diisi manusia lewat portal MO dan ditempelkan oleh
+        MoStore.terapkan(). Mesin yang belum ditugasi tetap kosong; itu
+        justru berguna, karena mesin yang terlewat saat pembagian order
+        jadi kelihatan.
+        """
         for m in line.machines:
-            m.order_mo = random.choice(mos)
-        # pastikan tiap MO dipakai minimal 1 mesin
-        used = {m.order_mo for m in line.machines}
-        for mo in mos:
-            if mo not in used:
-                random.choice(line.machines).order_mo = mo
+            m.order_mo = ""
 
     _rollup = staticmethod(rollup)
 
@@ -477,7 +507,7 @@ class LiveSource(BaseSource):
 
             for row in db.query("SELECT line_id, nama, jenis, hall "
                                 "FROM master_line ORDER BY line_id"):
-                group = self._group(row.jenis)          # rapier/ajl/shuttle
+                group = self._group(row.jenis)          # kode jenis mesin
                 line = Line(
                     id=row.line_id,                     # HARUS sama dengan
                                                         # nama stream go2rtc

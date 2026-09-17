@@ -64,7 +64,7 @@ LAPOR_WARNA_JANGGAL = 300
 #: vs merah membuat putus pakan tercatat sebagai kerusakan mesin.
 #: Urutan segmen menara ATAS -> BAWAH pada Toyota JAT810 di pabrik ini.
 #: Dipastikan 15 Sep 2026 dari layar "Signal lamp" mesin (4 kolom lampu:
-#: merah, hijau, putih, kuning) dan dari vid16.mp4 — menara di sana
+#: merah, hijau, putih, kuning) dan dari vid8.mp4 — menara di sana
 #: menyalakan segmen ke-2 (hijau) dan ke-3 (putih), yang cocok dengan
 #: urutan kolom itu.
 #:
@@ -158,6 +158,11 @@ class CameraWorker(threading.Thread):
         self.last_seen_person = time.time()
         self.orang_terakhir = 0       # dipakai pada frame yang tidak dideteksi
         self.orang_sejak = None       # kapan kehadiran SEKARANG dimulai
+        self.orang_terlihat = 0.0     # kapan orang TERAKHIR terlihat
+        #: detik tanpa deteksi sebelum operator dianggap benar-benar pergi.
+        #: Terukur di rekaman pabrik: celah deteksi terpanjang 8,2 detik
+        #: sementara orangnya masih di tempat.
+        self.jeda_orang = float(self.cfg.get("jeda_orang", 12))
         self.crowd_since = None
         self.red_since = None
         self.last_alert = {}          # label -> waktu terakhir dikirim
@@ -414,11 +419,21 @@ class CameraWorker(threading.Thread):
                 px, py = box_center_bottom(box)
                 if cv2.pointPolygonTest(self.zone_px, (px, py), False) >= 0:
                     n_in_zone += 1
-            if n_in_zone > 0 and self.orang_terakhir == 0:
-                self.orang_sejak = now        # kehadiran baru dimulai
-            elif n_in_zone == 0:
+            # KEHADIRAN DIBERI JEDA. Deteksi orang putus-putus: terukur pada
+            # rekaman pabrik, celah sampai 8,2 detik terjadi sementara
+            # operatornya tidak ke mana-mana (terhalang mesin, membungkuk).
+            # Tanpa jeda, tiap celah menghapus orang_sejak dan jam kedatangan
+            # operator melompat maju — persis angka yang dipakai menghitung
+            # waktu respons.
+            if n_in_zone > 0:
+                self.orang_terlihat = now
+                if self.orang_sejak is None:
+                    self.orang_sejak = now    # kehadiran baru dimulai
+                self.orang_terakhir = n_in_zone
+            elif self.orang_sejak is not None and \
+                    now - self.orang_terlihat >= self.jeda_orang:
                 self.orang_sejak = None
-            self.orang_terakhir = n_in_zone
+                self.orang_terakhir = 0
         else:
             # Frame antara: pakai hitungan orang terakhir. Aturan alert bekerja
             # pada rentang menit, jadi jeda beberapa ratus milidetik tidak
@@ -482,8 +497,12 @@ class CameraWorker(threading.Thread):
         log.info("[%s] stream terhubung", self.line_id)
         self.zone_px = None
         # Lampu memimpin lajunya; deteksi orang menumpang lebih jarang.
-        fps_lampu = self.cfg.get("fps_lampu") or self.cfg["fps"]
-        interval = 1.0 / max(1, fps_lampu)
+        # TAPI hanya kalau kamera ini PUNYA menara untuk dibaca. Kamera yang
+        # belum dikalibrasi tidak punya alasan mendekode 25 frame per detik
+        # lalu membuangnya — dulu semua kamera dipaksa ke laju lampu, dan
+        # 12 dari 18 kamera di zones.json membayar dekode 8x lipat untuk
+        # frame yang tidak dipakai siapa pun.
+        interval_lampu = 1.0 / max(1, self.cfg.get("fps_lampu") or self.cfg["fps"])
         interval_orang = 1.0 / max(1, self.cfg["fps"])
         last_run = 0.0
         last_orang = 0.0
@@ -496,6 +515,9 @@ class CameraWorker(threading.Thread):
                     return
 
                 now = time.time()
+                # dihitung ulang tiap putaran: kalibrasi bisa datang di
+                # tengah sesi dan menara baru muncul tanpa restart
+                interval = interval_lampu if self.pembaca else interval_orang
                 if now - last_run < interval:
                     continue                # sampling: hanya proses N fps
                 last_run = now

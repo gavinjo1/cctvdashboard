@@ -22,15 +22,39 @@ data/*.db-wal
 data/*.db-shm
 
 # REKAMAN PABRIK — berisi wajah operator. Repo ini publik.
-# Videonya bukan bagian dari kode; simpan di NAS/Drive internal.
-ai/foto/vid*
-ai/foto/*.mp4
-ai/foto/*.mov
+#
+# DITOLAK SEMUA, LALU DIIZINKAN SATU PER SATU. Daftar-larangan pernah
+# gagal di sini: berkas dinomori ulang (vid16 -> vid8) dan muncul nama
+# baru, sehingga tiap kali harus menambah pola. Satu yang terlewat =
+# rekaman pabrik terbit ke repo publik, dan riwayat git tidak bisa lupa.
+ai/foto/*
+!ai/foto/peta.txt
+!ai/foto/.gitkeep
 
-# Database runtime — isinya data mesin, bukan kode
+# Data runtime — isi pabrik, bukan kode
 data/history.db
 data/operators.json
+data/mo.json
+
+# berkas setengah-tulis dari penyimpanan atomik (calibration.py, mo.py).
+# Tertinggal kalau proses mati tepat saat menyimpan.
+data/*.tmp
 
 # hasil sementara alat uji
 kisi.jpg
 overlay.png
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.m4v
+
+# keluaran nohup & log
+nohup.out
+*.log
+
+# editor & OS
+.idea/
+.vscode/
+*.swp
+Thumbs.db

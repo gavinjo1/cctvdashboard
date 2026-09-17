@@ -81,6 +81,8 @@ class Settings:
     # TODO(pabrik): file ini WAJIB ikut backup. Hilang = kalibrasi ulang
     # semua kamera dari nol.
     CALIBRATION_FILE = os.getenv("CCTV_CALIBRATION_FILE", "data/calibration.json")
+    #: Penugasan MO per mesin, diisi lewat portal MO di dashboard.
+    MO_FILE = os.getenv("CCTV_MO_FILE", "data/mo.json")
 
     # Database histori: produksi per jam, log alert, jejak audit.
     # Tanpa ini, semua data hilang setiap dashboard di-restart.
