@@ -27,10 +27,10 @@ Butuh **3 terminal**. Jalankan berurutan.
 ./run-demo.sh
 ```
 
-**2. Sumber kamera** (video/foto jadi kamera palsu)
+**2. Sumber kamera** (video/foto jadi kamera palsu, sekalian melacak operator)
 
 ```bash
-./venv-ai/bin/python ai/foto_kamera.py --dir ai/foto
+./venv-ai/bin/python ai/foto_kamera.py --dir ai/foto --lacak
 ```
 
 **3. Pembaca lampu**
@@ -43,25 +43,30 @@ Buka <http://localhost:8000>.
 
 > Tanpa terminal 3, lampu tidak terbaca dan semua mesin abu-abu.
 
-### Kalau kamera hitam
+### Kalau laptop mulai panas
 
-Browser cuma sanggup ~6 stream MJPEG sekaligus. Untuk menampilkan 18 kamera,
-ganti terminal 1 dengan:
-
-```bash
-CCTV_STREAM_URL="http://127.0.0.1:1984/frame?src={id}" CCTV_STREAM_IMG_REFRESH=2 ./run-demo.sh
-```
-
-Gambar jadi patah-patah 2 detik sekali, tapi semua kamera muncul.
-
-### Tambah pelacak operator
+`--lacak` tanpa nama line melacak **semua** video. tambahkan ajl-angka untuk line yang mau di show.
 
 ```bash
 ./venv-ai/bin/python ai/foto_kamera.py --dir ai/foto --lacak ajl-07,ajl-14
 ```
 
-`--lacak` tanpa nama line = semua. **Berat**: 9 video terlacak.
-Sebutkan line-nya kalau laptop mulai panas.
+Atau delete `--lacak` , lampu tetap terbaca, cuma kotak
+kuning di sekitar operator yang hilang.
+
+
+### Kalau mau video mulus
+
+Bawaannya tarik-satu-gambar tiap 1 detik, supaya **semua 18 kamera tampil**.
+MJPEG bersambung jauh lebih mulus (~23 fps) tetapi menahan satu koneksi per
+kamera, sedangkan browser hanya mengizinkan ~6 koneksi per host — kamera
+ke-7 dan seterusnya hitam selamanya.
+
+Untuk ≤ 6 kamera (saring lewat sidebar), pakai MJPEG:
+
+```bash
+CCTV_STREAM_URL="http://127.0.0.1:1984/stream?src={id}" CCTV_STREAM_IMG_REFRESH=0 ./run-demo.sh
+```
 
 ---
 
@@ -143,26 +148,6 @@ Diisi di `zones.json`, urut **atas → bawah**:
 "warna_menara": ["merah", "hijau", "putih", "kuning"],
 "saat_gelap": "run"
 ```
-
-Di pabrik ini (Toyota JAT810):
-
-| | |
-|---|---|
-| semua padam | mesin jalan normal |
-| hijau | pakan putus |
-| merah | lusi putus |
-| putih, kuning | **belum dipastikan** |
-
-`warna_menara` = warna fisik tiap posisi. Dipakai **memeriksa kotak**, bukan
-menentukan arti. Kalau segmen ke-2 menyala tapi pikselnya merah padahal
-seharusnya hijau, kotaknya meleset — worker menulis `WARNA TIDAK COCOK`.
-
-`saat_gelap` = status saat tidak ada segmen menyala. **Salah pilih membuat
-status semua mesin terbalik.** Pastikan dengan melihat satu mesin yang sedang
-berproduksi.
-
-Lampu dibaca **25 fps** karena sinyalnya berkedip. Pada 3 fps, kedip 3 Hz tidak
-terdeteksi sama sekali.
 
 ---
 

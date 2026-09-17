@@ -6,8 +6,20 @@
 #   chmod +x go2rtc_linux_amd64 && sudo mv go2rtc_linux_amd64 /usr/local/bin/go2rtc
 #   go2rtc -config /opt/cctvdashboard/deploy/go2rtc.yaml
 #
-# PENTING: nama stream HARUS sama dengan line_id di dashboard
-#          (rapier-01, ajl-01, shuttle-01, ...) karena URL dibangun dari id itu.
+# PENTING: nama stream HARUS SAMA PERSIS dengan line_id di dashboard —
+# ajl-01 sampai ajl-18 — karena URL dibangun dari id itu
+# (CCTV_STREAM_URL="http://IP:1984/api/stream.mp4?src={id}").
+# Satu nama yang meleset = satu kotak kamera hitam, tanpa pesan kesalahan.
+#
+# Line dinomori BERURUTAN menyeberangi hall, mengikuti LAYOUT di
+# app/source.py:  Hall A = ajl-01..06,  Hall B = ajl-07..15,
+# Hall C = ajl-16..18.  Kalau urutan hall di pabrik berbeda, ubah di
+# app/source.py DULU, baru samakan berkas ini.
+#
+# TODO(pabrik): ganti IP, user, dan password dengan kamera sebenarnya.
+# BERKAS INI BERISI PASSWORD KAMERA. Salin jadi go2rtc.local.yaml untuk
+# dipakai sehari-hari — nama itu sudah masuk .gitignore. Yang di repo ini
+# hanya contoh.
 
 api:
   listen: ":1984"
@@ -16,24 +28,108 @@ rtsp:
   listen: ":8554"      # dipakai AI worker untuk menarik stream
 
 streams:
-  # ---- stream utama (halaman detail) + sub-stream (grid) ----
-  # Channel 101 = main stream, 102 = sub stream pada kamera Hikvision/Dahua.
-  rapier-01:
+  # Tiap line butuh DUA entri:
+  #   <line_id>       main stream, dipakai halaman detail & baca lampu
+  #   <line_id>-sub   sub stream, dipakai GRID
+  #
+  # Grid 18 kamera WAJIB pakai sub-stream (CCTV_STREAM_URL_GRID), atau PC
+  # operator tersendat mendekode 18 aliran resolusi penuh sekaligus.
+  #
+  # Channel 101 = main, 102 = sub pada kamera Hikvision/Dahua.
+  # Merek lain memakai jalur berbeda — cek di manual kameranya.
+
+  # ---------------- Hall A : ajl-01 .. ajl-06 ----------------
+  ajl-01:
     - rtsp://admin:password@192.168.1.11:554/Streaming/Channels/101
-  rapier-01-sub:
+  ajl-01-sub:
     - rtsp://admin:password@192.168.1.11:554/Streaming/Channels/102
 
-  rapier-02:
+  ajl-02:
     - rtsp://admin:password@192.168.1.12:554/Streaming/Channels/101
-  rapier-02-sub:
+  ajl-02-sub:
     - rtsp://admin:password@192.168.1.12:554/Streaming/Channels/102
 
-  ajl-01:
+  ajl-03:
+    - rtsp://admin:password@192.168.1.13:554/Streaming/Channels/101
+  ajl-03-sub:
+    - rtsp://admin:password@192.168.1.13:554/Streaming/Channels/102
+
+  ajl-04:
+    - rtsp://admin:password@192.168.1.14:554/Streaming/Channels/101
+  ajl-04-sub:
+    - rtsp://admin:password@192.168.1.14:554/Streaming/Channels/102
+
+  ajl-05:
+    - rtsp://admin:password@192.168.1.15:554/Streaming/Channels/101
+  ajl-05-sub:
+    - rtsp://admin:password@192.168.1.15:554/Streaming/Channels/102
+
+  ajl-06:
+    - rtsp://admin:password@192.168.1.16:554/Streaming/Channels/101
+  ajl-06-sub:
+    - rtsp://admin:password@192.168.1.16:554/Streaming/Channels/102
+
+  # ---------------- Hall B : ajl-07 .. ajl-15 ----------------
+  ajl-07:
     - rtsp://admin:password@192.168.1.21:554/Streaming/Channels/101
-  ajl-01-sub:
+  ajl-07-sub:
     - rtsp://admin:password@192.168.1.21:554/Streaming/Channels/102
 
-  # ... lanjutkan untuk 18 line
+  ajl-08:
+    - rtsp://admin:password@192.168.1.22:554/Streaming/Channels/101
+  ajl-08-sub:
+    - rtsp://admin:password@192.168.1.22:554/Streaming/Channels/102
+
+  ajl-09:
+    - rtsp://admin:password@192.168.1.23:554/Streaming/Channels/101
+  ajl-09-sub:
+    - rtsp://admin:password@192.168.1.23:554/Streaming/Channels/102
+
+  ajl-10:
+    - rtsp://admin:password@192.168.1.24:554/Streaming/Channels/101
+  ajl-10-sub:
+    - rtsp://admin:password@192.168.1.24:554/Streaming/Channels/102
+
+  ajl-11:
+    - rtsp://admin:password@192.168.1.25:554/Streaming/Channels/101
+  ajl-11-sub:
+    - rtsp://admin:password@192.168.1.25:554/Streaming/Channels/102
+
+  ajl-12:
+    - rtsp://admin:password@192.168.1.26:554/Streaming/Channels/101
+  ajl-12-sub:
+    - rtsp://admin:password@192.168.1.26:554/Streaming/Channels/102
+
+  ajl-13:
+    - rtsp://admin:password@192.168.1.27:554/Streaming/Channels/101
+  ajl-13-sub:
+    - rtsp://admin:password@192.168.1.27:554/Streaming/Channels/102
+
+  ajl-14:
+    - rtsp://admin:password@192.168.1.28:554/Streaming/Channels/101
+  ajl-14-sub:
+    - rtsp://admin:password@192.168.1.28:554/Streaming/Channels/102
+
+  ajl-15:
+    - rtsp://admin:password@192.168.1.29:554/Streaming/Channels/101
+  ajl-15-sub:
+    - rtsp://admin:password@192.168.1.29:554/Streaming/Channels/102
+
+  # ---------------- Hall C : ajl-16 .. ajl-18 ----------------
+  ajl-16:
+    - rtsp://admin:password@192.168.1.31:554/Streaming/Channels/101
+  ajl-16-sub:
+    - rtsp://admin:password@192.168.1.31:554/Streaming/Channels/102
+
+  ajl-17:
+    - rtsp://admin:password@192.168.1.32:554/Streaming/Channels/101
+  ajl-17-sub:
+    - rtsp://admin:password@192.168.1.32:554/Streaming/Channels/102
+
+  ajl-18:
+    - rtsp://admin:password@192.168.1.33:554/Streaming/Channels/101
+  ajl-18-sub:
+    - rtsp://admin:password@192.168.1.33:554/Streaming/Channels/102
 
 log:
   level: info
