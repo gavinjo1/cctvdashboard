@@ -192,7 +192,14 @@
     "  Kalau segmen ke-2 menyala tapi pikselnya merah padahal di posisi",
     "  itu seharusnya hijau, kotak menaranya meleset. Tanpa pemeriksaan",
     "  ini, kotak yang meleset menghasilkan pembacaan yang SALAH tetapi",
-    "  seluruh angkanya tetap terlihat wajar."
+    "  seluruh angkanya tetap terlihat wajar.",
+    "",
+    "warna yang dikenali : merah, oranye, kuning, hijau, biru, ungu, putih.",
+    "  Batasnya DIUKUR dari foto menara pabrik ini: merah hue 5-10 & 177-180,",
+    "  oranye (amber, agak kecoklatan) 18-21, hijau 76-87.",
+    "  oranye & kuning dianggap SEKELUARGA saat memeriksa kotak menara —",
+    "  mika amber terbaca oranye atau kuning tergantung tebal mika dan white",
+    "  balance kamera, dan memisahkannya akan melahirkan peringatan palsu."
   ],
   "indikator": [
     "lusi_putus",

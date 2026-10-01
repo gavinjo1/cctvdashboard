@@ -44,7 +44,9 @@
      terlihat di lantai. Di pabrik ini HIJAU = pakan putus, jadi memakai
      --run untuk hijau akan membuat masalah terlihat seperti kabar baik. */
   --lamp-merah:#e5484d;
+  --lamp-oranye:#e8730c;   /* amber menara — lebih tua dari kuning */
   --lamp-kuning:#f0b429;
+  --lamp-ungu:#8e4ec6;
   --lamp-hijau:#30a46c;
   --lamp-biru:#3b82f6;
   --lamp-putih:#f2f4f7;
@@ -550,7 +552,9 @@ body{
    di depan mesin. Catatan: di pabrik ini HIJAU BERARTI PAKAN PUTUS, bukan
    "sehat" — mesin yang sehat menaranya PADAM, jadi warnanya abu. */
 .u-lamp-merah{background:var(--lamp-merah)!important}
+.u-lamp-oranye{background:var(--lamp-oranye)!important}
 .u-lamp-kuning{background:var(--lamp-kuning)!important}
+.u-lamp-ungu{background:var(--lamp-ungu)!important}
 .u-lamp-hijau{background:var(--lamp-hijau)!important}
 .u-lamp-biru{background:var(--lamp-biru)!important}
 .u-lamp-putih{background:var(--lamp-putih)!important;
@@ -572,7 +576,9 @@ body{
    dalamnya. Tanpa aturan ini chip tetap memakai warna status (merah) meski
    lampu yang menyala putih. */
 .chip.u-lamp-merah i{background:var(--lamp-merah)!important}
+.chip.u-lamp-oranye i{background:var(--lamp-oranye)!important}
 .chip.u-lamp-kuning i{background:var(--lamp-kuning)!important}
+.chip.u-lamp-ungu i{background:var(--lamp-ungu)!important}
 .chip.u-lamp-hijau i{background:var(--lamp-hijau)!important}
 .chip.u-lamp-biru i{background:var(--lamp-biru)!important}
 .chip.u-lamp-putih i{background:var(--lamp-putih)!important;

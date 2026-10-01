@@ -378,7 +378,7 @@ class Katalog:
     def __init__(self, folder: Path, rasio, peta_manual=None,
                  model_path=None, fps_lacak=6.0, jeda_keluar=5.0,
                  min_geser=0.0, min_hadir=3.0, min_conf=0.50,
-                 lacak_line="*"):
+                 lacak_line="*", pindai_otomatis=True):
         self.folder = folder
         self.rasio = rasio
         self.model_path = model_path
@@ -391,11 +391,14 @@ class Katalog:
         self._pemutar = {}                    # path -> PemutarVideo (dibagi)
         self.bersama = {}                     # path -> line_id yang menumpang
         self.pelacak = {}                     # line_id -> Pelacak
+        # foto yang sudah di-encode: line_id -> ((mtime, ukuran), jpeg)
+        self._foto_jpeg = {}
+        self._kunci_foto = threading.Lock()
         self.foto = {}                        # line_id -> Path
         self.video = {}                       # line_id -> PemutarVideo
-        self._pindai(peta_manual or {})
+        self._pindai(peta_manual or {}, pindai_otomatis)
 
-    def _pindai(self, peta_manual):
+    def _pindai(self, peta_manual, pindai_otomatis=True):
         # Berkas yang sudah dipetakan manual tidak boleh ikut terdaftar lagi
         # lewat penamaan otomatis — kalau tidak, satu video diputar oleh DUA
         # utas sekaligus, memakan CPU dua kali lipat tanpa guna.
@@ -409,6 +412,18 @@ class Katalog:
                 continue
             self._daftar(line_id, p)
             terpakai.add(p.resolve())
+
+        # PETA.TXT ADALAH OTORITAS. Kalau berkas peta ada, penamaan otomatis
+        # dimatikan: berkas yang sengaja ditutup dengan "#" tidak boleh
+        # masuk lagi lewat pintu belakang.
+        #
+        # Dulu tidak begitu, dan akibatnya diam-diam merugikan: menutup
+        # ajl-07..18 untuk meringankan laptop tidak menghemat apa pun —
+        # vid1/vid2/vid8/vid9 tetap didaftarkan sebagai line palsu bernama
+        # "vid1" dst, tetap didekode, dan dengan --lacak tetap dapat model
+        # YOLO sendiri. Terukur: 9 video terlacak padahal peta cuma 6 line.
+        if not pindai_otomatis:
+            return
 
         for p in sorted(self.folder.iterdir()):
             if not p.is_file():
@@ -459,18 +474,46 @@ class Katalog:
         return sorted(out)
 
     def jpeg(self, line_id):
-        """JPEG terbaru untuk line ini, atau None kalau tidak ada sumbernya."""
+        """JPEG terbaru untuk line ini, atau None kalau tidak ada sumbernya.
+
+        FOTO DISIMPAN DI INGATAN, dikunci pada (waktu-ubah, ukuran) berkas.
+        Sebelumnya tiap permintaan membaca ulang dari disk lalu meng-encode
+        ulang: terukur 21,7 ms untuk foto 1200x1600, dan itu dibayar SETIAP
+        penyegaran, tiap line foto, tiap layar yang terbuka. Enam line foto
+        di lima layar sudah memakan 65% satu inti hanya untuk menghasilkan
+        gambar yang sama persis berulang-ulang.
+
+        Kuncinya bukan nama berkas melainkan cap waktu + ukurannya, jadi
+        kebiasaan "timpa fotonya, muat ulang halaman, tanpa restart" tetap
+        bekerja: begitu berkasnya berubah, capnya berubah, simpanan dibuang.
+        """
         if line_id in self.video:
             return self.video[line_id].jpeg() or None
         p = self.foto.get(line_id)
         if p is None:
             return None
-        g = cv2.imread(str(p))                # dibaca ulang: boleh diganti
+        try:
+            st = p.stat()
+            cap = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+
+        with self._kunci_foto:
+            simpan = self._foto_jpeg.get(line_id)
+            if simpan and simpan[0] == cap:
+                return simpan[1]
+
+        g = cv2.imread(str(p))
         if g is None:
             return None
         ok, buf = cv2.imencode(".jpg", ke_rasio(g, self.rasio),
                                [cv2.IMWRITE_JPEG_QUALITY, 92])
-        return buf.tobytes() if ok else None
+        if not ok:
+            return None
+        data = buf.tobytes()
+        with self._kunci_foto:
+            self._foto_jpeg[line_id] = (cap, data)
+        return data
 
     def jpeg_ke(self, line_id):
         """(jpeg, nomor_frame). Foto diam nomornya selalu 0."""
@@ -504,15 +547,38 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _kirim(self, kode, tipe, isi):
-        self.send_response(kode)
-        self.send_header("Content-Type", tipe)
-        self.send_header("Content-Length", str(len(isi)))
-        # Dashboard membaca piksel dari canvas untuk pratinjau kalibrasi.
-        # Tanpa header ini canvas jadi "tainted" dan pembacaannya mati.
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(isi)
+        """Kirim satu jawaban. Diam kalau klien sudah pergi.
+
+        Peramban menutup koneksi begitu kotak kamera hilang dari layar —
+        ganti halaman, gulir, muat ulang, atau 18 kotak meminta bersamaan
+        lalu sebagian dibatalkan. Itu keadaan NORMAL, bukan kesalahan
+        server, tetapi socketserver mencetak traceback penuh untuk tiap
+        kejadian dan konsol jadi penuh BrokenPipeError.
+        """
+        try:
+            self.send_response(kode)
+            self.send_header("Content-Type", tipe)
+            self.send_header("Content-Length", str(len(isi)))
+            # Dashboard membaca piksel dari canvas untuk pratinjau kalibrasi.
+            # Tanpa header ini canvas jadi "tainted" dan pembacaannya mati.
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(isi)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
+    def handle_one_request(self):
+        """Bungkus penanganan bawaan supaya klien yang pergi tidak berisik.
+
+        _kirim() sudah menjaga jalur biasa, tetapi koneksi bisa putus juga
+        saat header sedang ditulis atau di tengah jalur lain. Di sini
+        ditangkap sekali untuk semuanya.
+        """
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def do_GET(self):
         u = urlparse(self.path)
@@ -623,6 +689,11 @@ def main():
     ap.add_argument("--jeda-keluar", type=float, default=5.0,
                     help="detik tanpa terdeteksi sebelum disebut KELUAR. "
                          "Menahan deteksi yang putus sesaat saat terhalang mesin")
+    ap.add_argument("--pindai", action="store_true",
+                    help="tetap daftarkan berkas yang TIDAK ada di peta.txt, "
+                         "memakai nama berkasnya sebagai line_id. Bawaannya "
+                         "MATI kalau peta.txt ada: berkas yang sengaja "
+                         "ditutup '#' tidak boleh masuk lewat pintu belakang")
     ap.add_argument("--min-conf", type=float, default=0.50,
                     help="ambang keyakinan deteksi. Di vid1 dengan yolov8s, "
                          "orang 0.61-0.83 dan salah-deteksi 0.43 — inilah "
@@ -659,14 +730,21 @@ def main():
     folder = Path(a.dir)
     folder.mkdir(parents=True, exist_ok=True)
     # peta.txt jadi dasar, --map di baris perintah menimpanya
-    gabung = baca_peta(folder)
+    dari_berkas = baca_peta(folder)
+    gabung = dict(dari_berkas)
     gabung.update(peta)
+    # Peta ada -> peta yang menentukan. --pindai mengembalikan perilaku lama.
+    pindai_otomatis = a.pindai or not dari_berkas
+    if dari_berkas and not pindai_otomatis:
+        log.info("peta.txt dipakai sebagai satu-satunya sumber "
+                 "(--pindai untuk ikut memindai berkas lain)")
 
     kat = Katalog(folder, rasio, gabung,
                   model_path=a.model if a.lacak else None,
                   fps_lacak=a.fps_lacak, jeda_keluar=a.jeda_keluar,
                   min_geser=a.min_geser, min_hadir=a.min_hadir,
-                  min_conf=a.min_conf, lacak_line=lacak_line)
+                  min_conf=a.min_conf, lacak_line=lacak_line,
+                  pindai_otomatis=pindai_otomatis)
 
     isi = kat.daftar()
     if not isi:

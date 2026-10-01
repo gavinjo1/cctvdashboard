@@ -1,4 +1,46 @@
 /* ================================================================
+   CCTV Monitoring — modul induk
+
+     GET  /api/lines                     snapshot awal
+     WS   /ws                            update realtime
+
+   Berkas ini merangkai: sambungan ke server, penyaringan, perpindahan
+   view, dan penggambaran kamera/detail/peta/analisa. Bagian yang berdiri
+   sendiri tinggal di modulnya masing-masing:
+
+     inti.js       pembantu kecil: esc, num, setText, warna mesin
+     keadaan.js    data bersama dari snapshot terakhir (S)
+     dialog.js     pengganti prompt/confirm/alert
+     tema.js       terang / gelap / ikuti sistem
+     operator.js   nama penanggung jawab + penutupan alert
+     laporan.js    laporan shift
+     tampil_mo.js  portal MO
+     calibrate.js  kanvas kalibrasi zona & kotak lampu
+
+   Update dari server tidak membangun ulang DOM: nilai di-patch di tempat
+   supaya tidak berkedip dan scroll/hover tidak hilang.
+   ================================================================ */
+import {
+  $, durasi, effClass, esc, fmt, jam, LAMPU_SAH, num, setClass, setHTML,
+  setText, setWidth, statusText, unitClass, unitTitle,
+} from "./inti.js";
+import { byId, S } from "./keadaan.js";
+import { dlgConfirm, dlgInfo, dlgOpen } from "./dialog.js";
+import { temaMuat, bukaPengaturan } from "./tema.js";
+import {
+  askOperator, operatorLupakan, operatorNama, operatorPeriksaPeriode,
+  resolveAlert,
+} from "./operator.js";
+import {
+  anaTabAktif, laporanHubungkan, loadPeriods, loadReport, renderReport,
+  setAnaTab,
+} from "./laporan.js";
+import { renderMoPortal } from "./tampil_mo.js";
+import {
+  CAL, calBindControls, calClose, calDraw, calHubungkan, calShowSaved,
+} from "./calibrate.js";
+
+/* ================================================================
    CCTV Monitoring — frontend
      GET  /api/lines                     snapshot awal
      WS   /ws                            update realtime
@@ -8,271 +50,20 @@
    di tempat supaya tidak berkedip dan scroll/hover tidak hilang.
    ================================================================ */
 
-let GROUPS = [], ALL = [], HALLS = [], SUMMARY = {};
-let STREAM_MODE = "video", IMG_REFRESH = 2;
-let SOURCE_MODE = "sim", VISION_LEASE = 60;
-let SHIFT = {};
-let OPERATOR = "";            // nama penanggung jawab, diisi operatorPeriksaPeriode()
-let OPERATOR_LIST = [];
+/* Data bersama ada di keadaan.js (objek S). Yang di bawah ini state yang
+   HANYA dipakai berkas ini: pilihan view, penyaring, dan penanda DOM. */
 
 /* ---------------- STATE ---------------- */
 let view = "camera";                 // camera | detail | map | analysis
 let sel = { group: null, line: null };
 let openGroups = new Set();
 let openAna = new Set();
-let anaTab = "live";                 // live | report — tab di view Analysis
-let repPeriods = [], repData = null, repKey = null;
 let detailLine = null;
 let filter = "all";
 let query = "";
 let lastSig = "";                    // struktur DOM terakhir yang dirender
 
-const $ = id => document.getElementById(id);
-const fmt = n => (n || 0).toLocaleString("id-ID");
-const byId = id => ALL.find(l => l.id === id);
-/* ================================================================
-   LAPORAN SHIFT
-   Nilai sesaat (efisiensi, RPM) datang sudah dirata-rata terbobot
-   waktu dari server — bukan cuplikan terakhir shift.
-   ================================================================ */
-const jam = d => d ? new Date(d).toLocaleString("id-ID", { hour12: false }) : "—";
-const durasi = s => {
-  const j = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
-  return j ? `${j}j ${m}m` : `${m}m`;
-};
 
-async function loadPeriods() {
-  try {
-    repPeriods = await fetch("/api/report/periods").then(r => r.json());
-  } catch (e) { repPeriods = []; }
-  const sel = $("repPeriod");
-  sel.innerHTML = repPeriods.map(p => {
-    const tgl = p.started_at
-      ? new Date(p.started_at).toLocaleDateString("id-ID",
-          { day: "2-digit", month: "short" })
-      : "";
-    return `<option value="${esc(p.period_key)}">${esc(tgl)} · ${esc(p.shift)}${
-      p.live ? " (berjalan)" : ""}</option>`;
-  }).join("");
-  if (!repKey && repPeriods.length) repKey = repPeriods[0].period_key;
-  sel.value = repKey || "";
-}
-
-async function loadReport() {
-  const box = $("report");
-  box.innerHTML = `<div class="empty">Menyusun laporan…</div>`;
-  try {
-    const q = repKey ? `?period_key=${encodeURIComponent(repKey)}` : "";
-    const r = await fetch("/api/report/shift" + q);
-    if (!r.ok) {
-      const d = await r.json().catch(() => ({}));
-      box.innerHTML = `<div class="empty">${esc(d.detail || "Laporan tidak tersedia.")}</div>`;
-      return;
-    }
-    repData = await r.json();
-    renderReport();
-  } catch (e) {
-    box.innerHTML = `<div class="empty">Gagal mengambil laporan.</div>`;
-  }
-}
-
-function renderReport() {
-  const d = repData;
-  if (!d) return;
-  const r = d.ringkasan, a = d.alerts || {};
-
-  const tile = (label, value, sub) => `
-    <div class="rep-tile">
-      <div class="rep-label">${label}</div>
-      <div class="rep-value">${value}</div>
-      <div class="rep-sub">${sub || "&nbsp;"}</div>
-    </div>`;
-
-  const lineRow = l => `
-    <tr>
-      <td class="m-name">${esc(l.name)}</td>
-      <td>${esc(l.operator || "—")}</td>
-      <td class="w">
-        <div class="mini-bar"><span class="${effClass(l.eff_avg)}" style="width:${num(l.eff_avg)}%"></span></div>
-        <em>${l.eff_avg}%</em>
-      </td>
-      <td class="tnum">${l.eff_run}%</td>
-      <td class="tnum">${l.availability}%</td>
-      <td class="tnum">${fmt(l.output)} m</td>
-      <td class="tnum">${l.stops}x</td>
-      <td class="tnum">${durasi(l.sec_stop + l.sec_idle)}</td>
-    </tr>`;
-
-  const machRow = m => `
-    <tr>
-      <td class="m-name">${esc(m.name)}</td>
-      <td class="mono-cell">${esc(m.line_id)}</td>
-      <td class="w">
-        <div class="mini-bar"><span class="${effClass(m.eff_avg)}" style="width:${num(m.eff_avg)}%"></span></div>
-        <em>${m.eff_avg}%</em>
-      </td>
-      <td class="tnum">${m.availability}%</td>
-      <td class="tnum">${fmt(m.output)} m</td>
-      <td class="tnum">${m.stops}x</td>
-      <td class="tnum">${durasi(m.sec_stop)}</td>
-    </tr>`;
-
-  $("report").innerHTML = `
-    <div class="rep-head">
-      <div>
-        <h3 class="rep-title">Laporan ${esc(d.shift)}${d.live ? " — sedang berjalan" : ""}</h3>
-        <p class="rep-meta">${jam(d.started_at)} &nbsp;→&nbsp; ${d.live ? "sekarang" : jam(d.ended_at)}
-          &nbsp;·&nbsp; ${r.line} line, ${r.mesin} mesin
-          &nbsp;·&nbsp; terpantau ${r.durasi_menit} dari ${r.durasi_shift_menit} menit</p>
-      </div>
-      <div class="rep-flags">
-        ${d.live ? '<span class="rep-badge">Angka belum final</span>' : ""}
-        ${r.cakupan < 95 ? `<span class="rep-badge warn">Cakupan data ${r.cakupan}%</span>` : ""}
-      </div>
-    </div>
-    ${r.cakupan < 95 ? `<div class="rep-warn">
-      Dashboard hanya merekam <b>${r.durasi_menit} menit</b> dari ${r.durasi_shift_menit}
-      menit shift ini, sehingga angka di bawah mewakili ${r.cakupan}% waktu shift.
-      Penyebab umum: dashboard baru dinyalakan di tengah shift, atau sempat mati.
-      Output dan jumlah stop tetap benar karena bersifat akumulatif; efisiensi dan
-      availability hanya menggambarkan periode yang terekam.
-    </div>` : ""}
-
-    <div class="rep-tiles">
-      ${tile("Output", `${fmt(r.output)}<small> m</small>`, "seluruh line")}
-      ${tile("Efisiensi Rata-rata", `${r.eff_avg}%`, "dibobot waktu")}
-      ${tile("Availability", `${r.availability}%`, "porsi waktu beroperasi")}
-      ${tile("Total Stop", `${fmt(r.stops)}<small>x</small>`, "seluruh mesin")}
-      ${tile("Alert", `${a.total ?? 0}`, `${a.belum_ditangani ?? 0} belum ditangani`)}
-      ${tile("Waktu Tanggap", a.avg_response_sec != null ? durasi(a.avg_response_sec) : "—", "rata-rata")}
-    </div>
-
-    <h4 class="rep-h">Ringkasan per Line</h4>
-    <div class="rep-table">
-      <table class="ana-table">
-        <thead><tr>
-          <th>Line</th><th>Operator</th><th class="w">Efisiensi</th>
-          <th>Saat Jalan</th><th>Availability</th><th>Output</th><th>Stop</th><th>Tidak Jalan</th>
-        </tr></thead>
-        <tbody>${d.lines.map(lineRow).join("")}</tbody>
-      </table>
-    </div>
-
-    <h4 class="rep-h">Sepuluh Mesin dengan Efisiensi Terendah</h4>
-    <div class="rep-table">
-      <table class="ana-table">
-        <thead><tr>
-          <th>Mesin</th><th>Line</th><th class="w">Efisiensi</th>
-          <th>Availability</th><th>Output</th><th>Stop</th><th>Waktu Stop</th>
-        </tr></thead>
-        <tbody>${d.mesin_terburuk.map(machRow).join("")}</tbody>
-      </table>
-    </div>
-
-    <h4 class="rep-h">Sepuluh Mesin Paling Sering Berhenti</h4>
-    <div class="rep-table">
-      <table class="ana-table">
-        <thead><tr>
-          <th>Mesin</th><th>Line</th><th class="w">Efisiensi</th>
-          <th>Availability</th><th>Output</th><th>Stop</th><th>Waktu Stop</th>
-        </tr></thead>
-        <tbody>${d.mesin_paling_sering_stop.map(machRow).join("")}</tbody>
-      </table>
-    </div>
-
-    ${(a.by_label || []).length ? `
-    <h4 class="rep-h">Alert menurut Jenis</h4>
-    <div class="rep-table">
-      <table class="ana-table">
-        <thead><tr><th>Jenis</th><th>Jumlah</th></tr></thead>
-        <tbody>${a.by_label.map(x =>
-          `<tr><td>${esc(x.label)}</td><td class="tnum">${num(x.c)}x</td></tr>`).join("")}</tbody>
-      </table>
-    </div>` : ""}
-
-    <p class="rep-note">Efisiensi dan RPM dirata-rata dengan pembobotan waktu sepanjang shift.
-      Kolom <b>Efisiensi</b> menghitung mesin berhenti sebagai 0%, sedangkan
-      <b>Saat Jalan</b> hanya menghitung waktu mesin beroperasi. Output dan jumlah
-      stop adalah nilai akumulatif sejak awal shift.</p>`;
-}
-
-function setAnaTab(tab) {
-  anaTab = tab;
-  $("tabLive").classList.toggle("on", tab === "live");
-  $("tabReport").classList.toggle("on", tab === "report");
-  $("liveTools").hidden = tab !== "live";
-  $("repTools").hidden = tab !== "report";
-  $("analysis").hidden = tab !== "live";
-  $("report").hidden = tab !== "report";
-  setText($("anaTitle"), tab === "live" ? "Analisa per Mesin" : "Laporan Shift");
-  $("anaCount").hidden = tab !== "live";
-  if (tab === "report") { loadPeriods().then(loadReport); }
-  else render();
-}
-
-const statusText = s => ({ run: "Running", idle: "Idle", stop: "Stop",
-                           off: "Offline", unknown: "Belum terbaca" }[s] || s);
-
-/* Kelas warna satu mesin. WARNA LAMPU MENANG atas status, supaya yang di
-   layar sama dengan yang terlihat di menara mesin. Mesin yang lampunya
-   belum dikalibrasi tidak boleh ikut berwarna — "belum terbaca" harus
-   kelihatan beda dari "sehat". */
-const LAMPU_SAH = ["merah", "kuning", "hijau", "biru", "putih"];
-function unitClass(m) {
-  if (m.status === "unknown") return "u-unknown";
-  if (m.color && LAMPU_SAH.includes(m.color)) return "u-lamp-" + m.color;
-  // Menara padam = mesin jalan -> ABU, bukan hijau. Di pabrik ini hijau
-  // berarti PAKAN PUTUS, jadi memakai warna "run" membuat mesin sehat dan
-  // mesin bermasalah tampil dengan warna yang sama persis.
-  if (m.vision && m.status === "run") return "u-padam";
-  return "u-" + m.status;
-}
-function unitTitle(m) {
-  const asal = m.vision ? (m.color ? "lampu " + m.color : "menara padam")
-                        : "belum ada kotak lampu";
-  return m.name + " — " + statusText(m.status) + " (" + asal + ")";
-}
-const effClass = e => e >= 80 ? "good" : e >= 60 ? "mid" : "bad";
-
-/* Amankan teks sebelum disisipkan ke innerHTML.
- *
- * Isi alert (label, aktivitas, zona) datang dari POST /api/alerts — siapa pun
- * yang bisa menjangkau dashboard di jaringan pabrik bisa mengisinya. Tanpa
- * penyaringan ini, teks yang dikirim ke sana dijalankan sebagai kode di
- * layar SETIAP operator, dan bertahan sampai alert ditutup.
- *
- * Nama line, operator, dan kode MO ikut disaring: sumbernya master data
- * pabrik, bukan sesuatu yang dikarang dashboard ini.
- */
-function esc(v) {
-  if (v === null || v === undefined) return "";
-  return String(v)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-}
-
-/* Angka yang ikut masuk ke atribut style (lebar bar, posisi denah).
-   esc() tidak cukup di sana: "100%;background:url(...)" tetap sah sebagai
-   CSS meski tidak mengandung tanda kurung sudut. */
-function num(v, fallback = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-/* tulis hanya kalau berubah — mencegah repaint & kedip */
-function setText(el, val) {
-  if (el && el.textContent !== String(val)) el.textContent = val;
-}
-function setHTML(el, val) {
-  if (el && el.innerHTML !== val) el.innerHTML = val;
-}
-function setClass(el, cls) {
-  if (el && el.className !== cls) el.className = cls;
-}
-function setWidth(el, pct) {
-  const v = pct + "%";
-  if (el && el.style.width !== v) el.style.width = v;
-}
 
 /* ---------------- KONEKSI ---------------- */
 let ws = null, retry = 0;
@@ -286,17 +77,17 @@ function setConn(state) {
 }
 
 function applySnapshot(data) {
-  GROUPS = data.groups || [];
-  ALL = GROUPS.flatMap(g => g.lines);
-  HALLS = data.halls || [];
-  SUMMARY = data.summary || {};
-  STREAM_MODE = data.stream_mode || "video";
-  IMG_REFRESH = data.stream_img_refresh || 0;
-  SHIFT = data.shift || {};
-  SOURCE_MODE = data.source || "sim";
-  VISION_LEASE = data.vision_lease || 60;
+  S.GROUPS = data.groups || [];
+  S.ALL = S.GROUPS.flatMap(g => g.lines);
+  S.HALLS = data.halls || [];
+  S.SUMMARY = data.summary || {};
+  S.STREAM_MODE = data.stream_mode || "video";
+  S.IMG_REFRESH = data.stream_img_refresh || 0;
+  S.SHIFT = data.shift || {};
+  S.SOURCE_MODE = data.source || "sim";
+  S.VISION_LEASE = data.vision_lease || 60;
   operatorPeriksaPeriode();     // nama operator kedaluwarsa saat shift berganti
-  if (!openGroups.size) GROUPS.forEach(g => openGroups.add(g.key));
+  if (!openGroups.size) S.GROUPS.forEach(g => openGroups.add(g.key));
 
   renderKPI();
   // struktur sama -> cukup patch nilainya, tidak bangun ulang DOM
@@ -326,9 +117,9 @@ setInterval(() => {
 
 /* ---------------- FILTER ---------------- */
 function visibleLines() {
-  let list = ALL;
-  if (sel.line) list = ALL.filter(l => l.id === sel.line);
-  else if (sel.group) list = ALL.filter(l => l.type === sel.group);
+  let list = S.ALL;
+  if (sel.line) list = S.ALL.filter(l => l.id === sel.line);
+  else if (sel.group) list = S.ALL.filter(l => l.type === sel.group);
   if (filter === "run")   list = list.filter(l => l.status === "run");
   if (filter === "stop")  list = list.filter(l => l.status !== "run");
   if (filter === "alert") list = list.filter(l => l.alert);
@@ -359,11 +150,11 @@ function camInner(line, grid) {
   const url = grid && line.cam.stream_grid ? line.cam.stream_grid : line.cam.stream;
   if (!line.cam.online || !url) return `<div class="noise"></div>`;
 
-  if (STREAM_MODE === "iframe") {
+  if (S.STREAM_MODE === "iframe") {
     return `<iframe src="${esc(url)}" frameborder="0" allow="autoplay"
               scrolling="no" loading="lazy"></iframe>`;
   }
-  if (STREAM_MODE === "img") {
+  if (S.STREAM_MODE === "img") {
     // crossorigin: supaya kalibrasi bisa membaca warna piksel dari canvas.
     // Butuh header Access-Control-Allow-Origin dari sumber stream.
     return `<img src="${esc(url)}" alt="${esc(line.cam.id)}" data-refresh="${esc(url)}"
@@ -412,14 +203,14 @@ function render() {
   else if (view === "detail")   renderDetail();
   else if (view === "map")      renderMap();
   else if (view === "mo")       renderMoPortal();
-  else if (view === "analysis" && anaTab === "live") renderAnalysis();
+  else if (view === "analysis" && anaTabAktif() === "live") renderAnalysis();
   lastSig = signature();
 }
 
 /* ---------------- SIDEBAR ---------------- */
 function renderTree() {
   const tree = $("tree");
-  setHTML(tree, GROUPS.map(g => `
+  setHTML(tree, S.GROUPS.map(g => `
     <div class="grp${openGroups.has(g.key) ? " open" : ""}" data-grp="${esc(g.key)}">
       <div class="grp-head">
         <span><span class="caret">&#9654;</span> ${esc(g.label)}</span>
@@ -457,98 +248,10 @@ function renderTree() {
   });
 }
 
-/* ---------------- PORTAL MO ----------------
-   Nomor MO dulu dikarang acak tiap dashboard menyala. Di sini PPIC
-   mengisinya sendiri dan isiannya bertahan.
-
-   Disimpan PER LINE, bukan per ketikan: mengirim tiap huruf ke server akan
-   membanjiri jaringan dan membuat setengah line tersimpan setengah jalan
-   kalau koneksi putus di tengah. Tombol "Simpan line" mengirim keadaan
-   LENGKAP satu line sekaligus. */
-function renderMoPortal() {
-  const wrap = $("moPortal");
-  const lines = ALL;
-  setText($("moPortalCount"), `${lines.length} line`);
-
-  setHTML(wrap, lines.map(l => `
-    <div class="mo-line" data-line="${esc(l.id)}">
-      <div class="mo-line-head">
-        <b>${esc(l.name)}</b>
-        <span class="mo-line-area">${esc(l.area)}</span>
-        <span class="mo-line-sisa" data-sisa></span>
-        <span class="mo-line-aksi">
-          <button class="btn mo-isi-semua" type="button">Isi semua</button>
-          <button class="btn primary mo-simpan" type="button">Simpan line</button>
-        </span>
-      </div>
-      <div class="mo-grid">
-        ${l.machines.map(m => `
-          <label class="mo-sel">
-            <span class="mo-no">${String(m.no).padStart(2, "0")}</span>
-            <input class="mo-input" type="text" maxlength="32"
-                   data-m="${num(m.no)}" placeholder="—"
-                   value="${esc(m.order_mo || "")}">
-          </label>`).join("")}
-      </div>
-    </div>`).join(""));
-
-  wrap.querySelectorAll(".mo-line").forEach(box => {
-    const lineId = box.dataset.line;
-    const inputs = [...box.querySelectorAll(".mo-input")];
-
-    const hitungSisa = () => {
-      const kosong = inputs.filter(i => !i.value.trim()).length;
-      const el = box.querySelector("[data-sisa]");
-      setText(el, kosong ? `${kosong} mesin belum ditugasi` : "semua ditugasi");
-      el.classList.toggle("ok", !kosong);
-    };
-    inputs.forEach(i => { i.oninput = hitungSisa; });
-    hitungSisa();
-
-    // "Isi semua" menyalin isian PERTAMA yang tidak kosong ke seluruh mesin.
-    // Satu line biasanya mengerjakan satu order; mengetik nomor yang sama
-    // sepuluh kali adalah cara paling gampang salah ketik satu di antaranya.
-    box.querySelector(".mo-isi-semua").onclick = () => {
-      const sumber = inputs.find(i => i.value.trim());
-      if (!sumber) {
-        dlgInfo("Isi semua", "Ketik dulu satu nomor MO di salah satu mesin.");
-        return;
-      }
-      inputs.forEach(i => { i.value = sumber.value.trim(); });
-      hitungSisa();
-    };
-
-    box.querySelector(".mo-simpan").onclick = async btn => {
-      const tombol = box.querySelector(".mo-simpan");
-      const mesin = {};
-      inputs.forEach(i => { mesin[i.dataset.m] = i.value.trim(); });
-      tombol.disabled = true;
-      const labelAsli = tombol.textContent;
-      setText(tombol, "Menyimpan...");
-      try {
-        const r = await fetch(`/api/lines/${encodeURIComponent(lineId)}/mo`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ machines: mesin }),
-        });
-        if (!r.ok) {
-          const e = await r.json().catch(() => ({}));
-          throw new Error(e.detail || `HTTP ${r.status}`);
-        }
-        setText(tombol, "Tersimpan");
-        setTimeout(() => { setText(tombol, labelAsli); tombol.disabled = false; }, 1200);
-      } catch (e) {
-        tombol.disabled = false;
-        setText(tombol, labelAsli);
-        dlgInfo("Gagal menyimpan MO", String(e.message || e));
-      }
-    };
-  });
-}
 
 /* ---------------- KPI ---------------- */
 function renderKPI() {
-  const s = SUMMARY;
+  const s = S.SUMMARY;
   if (!s.total_line) return;
   setText($("kpiLine"), s.total_line);
   setText($("kpiLineSub"), `${s.mesin_total} mesin • ${s.mesin_per_line}/line`);
@@ -563,12 +266,12 @@ function renderKPI() {
   setHTML($("kpiOut"), `${fmt(s.output)}<small> m</small>`);
   setText($("kpiOutTrend"), `${s.output_pct}% dari target ${fmt(s.target)} m`);
 
-  if (SHIFT.name) {
-    setText($("shiftName"), SHIFT.name);
-    setText($("shiftTime"), `${SHIFT.started_at}–${SHIFT.next_at}`);
+  if (S.SHIFT.name) {
+    setText($("shiftName"), S.SHIFT.name);
+    setText($("shiftTime"), `${S.SHIFT.started_at}–${S.SHIFT.next_at}`);
     $("shiftBox").title =
-      `Shift ${SHIFT.name} • berjalan ${SHIFT.elapsed_min} menit • ` +
-      `sisa ${SHIFT.remaining_min} menit • penghitung direset tiap ${SHIFT.reset_mode}`;
+      `Shift ${S.SHIFT.name} • berjalan ${S.SHIFT.elapsed_min} menit • ` +
+      `sisa ${S.SHIFT.remaining_min} menit • penghitung direset tiap ${S.SHIFT.reset_mode}`;
   }
 
   const badge = $("bellBadge");
@@ -584,7 +287,7 @@ function renderCards() {
 
   setText($("viewTitle"),
     sel.line  ? (byId(sel.line) || {}).name || "Line"
-  : sel.group ? `${(GROUPS.find(g => g.key === sel.group) || {}).label} — semua line`
+  : sel.group ? `${(S.GROUPS.find(g => g.key === sel.group) || {}).label} — semua line`
   : "Semua Line");
   setText($("viewCount"), `${list.length} line`);
 
@@ -762,17 +465,17 @@ function infoBlock(l) {
  */
 function visionState(l) {
   const umur = l.vision_age;
-  // Data dari AI dinilai BASI tanpa memandang SOURCE_MODE. Dulu di sini ada
-  // jalan pintas `if (SOURCE_MODE !== "live") return "sim"`, dan itu menjadi
+  // Data dari AI dinilai BASI tanpa memandang S.SOURCE_MODE. Dulu di sini ada
+  // jalan pintas `if (S.SOURCE_MODE !== "live") return "sim"`, dan itu menjadi
   // berbahaya begitu simulator berhenti menimpa status mesin: mode "sim"
   // sekarang membawa pembacaan lampu SUNGGUHAN, jadi worker yang mati
   // meninggalkan warna terakhir membeku di layar tanpa satu pun peringatan.
   // (LiveSource juga masih NotImplementedError, jadi "live" tak tercapai —
   // jalan pintas itu membuat peringatannya jadi kode mati.)
   if (umur !== null && umur !== undefined) {
-    return umur > VISION_LEASE ? "basi" : "ok";
+    return umur > S.VISION_LEASE ? "basi" : "ok";
   }
-  return SOURCE_MODE === "live" ? "kosong" : "sim";
+  return S.SOURCE_MODE === "live" ? "kosong" : "sim";
 }
 
 function panelNoVision(l, state) {
@@ -908,323 +611,8 @@ function patchPanel(l) {
   }
 }
 
-/* ---------------- DIALOG ----------------
-   Pengganti prompt()/confirm()/alert() bawaan. Mengembalikan Promise:
-   nilai pilihan, atau null bila dibatalkan. */
-let dlgTutup = null;              // penutup dialog yang sedang terbuka
 
-function dlgOpen({ title, body, actions, onMount }) {
-  if (dlgTutup) dlgTutup(null);   // hanya satu dialog pada satu waktu
-  const back = $("dlgBack");
-  const fokusSebelumnya = document.activeElement;
 
-  setText($("dlgTitle"), title);
-  setHTML($("dlgBody"), body || "");
-  setHTML($("dlgActions"), (actions || []).map((a, i) =>
-    `<button class="dlg-btn ${esc(a.kind || "ghost")}" data-i="${i}">${
-      esc(a.label)}</button>`).join(""));
-
-  return new Promise(resolve => {
-    const selesai = val => {
-      if (dlgTutup !== selesai) return;
-      dlgTutup = null;
-      back.hidden = true;
-      document.removeEventListener("keydown", onKey, true);
-      if (fokusSebelumnya && fokusSebelumnya.focus) fokusSebelumnya.focus();
-      resolve(val);
-    };
-    dlgTutup = selesai;
-
-    function onKey(e) {
-      if (e.key === "Escape") { e.stopPropagation(); selesai(null); }
-    }
-    document.addEventListener("keydown", onKey, true);
-
-    back.hidden = false;
-    back.onclick = e => { if (e.target === back) selesai(null); };
-    $("dlgActions").querySelectorAll("[data-i]").forEach(b => {
-      b.onclick = () => {
-        const act = actions[+b.dataset.i];
-        selesai(act.value !== undefined ? act.value : act.label);
-      };
-    });
-    if (onMount) onMount($("dlgBody"), selesai);
-    const fokus = $("dlg").querySelector("input, .dlg-btn.primary, .dlg-btn");
-    if (fokus) fokus.focus();
-  });
-}
-
-const dlgInfo = (title, msg) => dlgOpen({
-  title, body: `<p class="dlg-msg">${esc(msg)}</p>`,
-  actions: [{ label: "Tutup", kind: "primary", value: true }],
-});
-
-const dlgConfirm = (title, msg, ya = "Lanjutkan") => dlgOpen({
-  title, body: `<p class="dlg-msg">${esc(msg)}</p>`,
-  actions: [{ label: "Batal", value: null },
-            { label: ya, kind: "danger", value: true }],
-});
-
-/* ---------------- TEMA ----------------
-   Tiga pilihan: terang, gelap, ikuti sistem.
-
-   "sistem" diselesaikan di sini, bukan lewat @media di CSS. Dengan cara
-   itu CSS cukup punya SATU blok tema gelap ([data-theme="dark"]); kalau
-   diselesaikan di CSS, seluruh daftar token harus digandakan di dalam
-   media query, dan tiap warna baru nanti harus ditambahkan di dua
-   tempat — yang cepat atau lambat akan terlewat.
-
-   Nilai tersimpan di peramban masing-masing: PC ruang kendali boleh
-   gelap sementara PC lantai produksi tetap terang. */
-const TEMA = ["terang", "gelap", "sistem"];
-const TEMA_LABEL = { terang: "Terang", gelap: "Gelap", sistem: "Ikuti sistem" };
-let temaPilihan = "terang";
-let temaMedia = null;
-let temaLepasPendengar = null;
-
-function temaGelapAktif(pilihan) {
-  return pilihan === "gelap" || (pilihan === "sistem" &&
-    window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
-}
-
-function temaTerapkan(pilihan, simpan = true) {
-  if (!TEMA.includes(pilihan)) pilihan = "terang";
-  temaPilihan = pilihan;
-  const gelap = temaGelapAktif(pilihan);
-
-  if (gelap) document.documentElement.dataset.theme = "dark";
-  else delete document.documentElement.dataset.theme;
-
-  // warna bilah alamat peramban di layar sentuh / mode kios
-  const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = gelap ? "#0d1117" : "#ffffff";
-
-  if (simpan) {
-    try { localStorage.setItem("cctv_theme", pilihan); } catch (e) {}
-  }
-
-  // Hanya dalam mode "sistem" dashboard ikut berubah saat OS berganti tema.
-  temaPantauSistem(pilihan === "sistem");
-}
-
-function temaPantauSistem(aktif) {
-  if (temaLepasPendengar) { temaLepasPendengar(); temaLepasPendengar = null; }
-  if (!aktif || !window.matchMedia) return;
-
-  if (!temaMedia) temaMedia = matchMedia("(prefers-color-scheme: dark)");
-  const ikut = () => { if (temaPilihan === "sistem") temaTerapkan("sistem", false); };
-  const lepas = [];
-
-  if (temaMedia.addEventListener) {
-    temaMedia.addEventListener("change", ikut);
-    lepas.push(() => temaMedia.removeEventListener("change", ikut));
-  } else if (temaMedia.addListener) {          // peramban lama
-    temaMedia.addListener(ikut);
-    lepas.push(() => temaMedia.removeListener(ikut));
-  }
-
-  // Jaring pengaman. Peristiwa "change" tidak selalu sampai — terutama bila
-  // tema OS berganti saat tab sedang tidak terlihat. Dashboard ini menyala
-  // berhari-hari tanpa disentuh, jadi sekali terlewat berarti tema salah
-  // sampai ada yang memuat ulang halaman. Periksa ulang setiap kali halaman
-  // kembali terlihat: murah, dan menutup celah itu.
-  document.addEventListener("visibilitychange", ikut);
-  lepas.push(() => document.removeEventListener("visibilitychange", ikut));
-
-  temaLepasPendengar = () => lepas.forEach(f => f());
-}
-
-function temaMuat() {
-  let p = "terang";
-  try { p = localStorage.getItem("cctv_theme") || "terang"; } catch (e) {}
-  temaTerapkan(p, false);
-}
-
-/* ---------------- PENGATURAN ---------------- */
-function bukaPengaturan() {
-  const baris = TEMA.map(t => `
-    <button class="set-opt${t === temaPilihan ? " on" : ""}" data-tema="${t}">
-      <span class="set-swatch ${t}"></span>
-      <span class="set-opt-txt">${TEMA_LABEL[t]}</span>
-      <span class="set-check">&#10003;</span>
-    </button>`).join("");
-
-  return dlgOpen({
-    title: "Pengaturan",
-    body: `
-      <div class="set-grup">
-        <div class="set-label">Tampilan</div>
-        <div class="set-opts" id="setTema">${baris}</div>
-        <p class="dlg-note">Pilihan ini hanya berlaku di peramban dan komputer
-          ini — layar lain tidak ikut berubah.</p>
-      </div>`,
-    actions: [{ label: "Tutup", kind: "primary", value: true }],
-    onMount: box => {
-      box.querySelectorAll("[data-tema]").forEach(b => {
-        b.onclick = () => {
-          temaTerapkan(b.dataset.tema);
-          box.querySelectorAll("[data-tema]").forEach(x =>
-            x.classList.toggle("on", x.dataset.tema === temaPilihan));
-        };
-      });
-    },
-  });
-}
-
-/* ---------------- IDENTITAS OPERATOR ----------------
-   Alert hanya boleh ditutup dengan nama operator — supaya ada bukti siapa
-   yang menangani. Nama disimpan BESERTA periode shiftnya: di PC bersama,
-   nama shift 1 kalau tidak pernah kedaluwarsa akan menempel pada
-   penutupan alert shift 3, dan jejak auditnya jadi salah dengan percaya
-   diri — lebih buruk daripada tidak ada catatan sama sekali. */
-function operatorSimpan(nama) {
-  OPERATOR = nama;
-  try {
-    localStorage.setItem("cctv_operator",
-      JSON.stringify({ nama, periode: SHIFT.period_key || "" }));
-  } catch (e) { /* localStorage diblokir: cukup simpan di memori */ }
-}
-
-function operatorLupakan() {
-  OPERATOR = "";
-  try { localStorage.removeItem("cctv_operator"); } catch (e) {}
-}
-
-/* Panggil tiap snapshot: buang nama begitu shift berganti. */
-function operatorPeriksaPeriode() {
-  const kunci = SHIFT.period_key;
-  if (!kunci) return;
-  let simpanan = null;
-  try { simpanan = JSON.parse(localStorage.getItem("cctv_operator") || "null"); }
-  catch (e) { simpanan = null; }
-
-  if (!simpanan || !simpanan.nama) { OPERATOR = ""; return; }
-  if (simpanan.periode !== kunci) {
-    operatorLupakan();                    // shift sudah berganti
-    return;
-  }
-  OPERATOR = simpanan.nama;
-}
-
-/* Dialog pemilih nama. Dengan daftar operator: cari lalu pilih.
-   Tanpa daftar: ketik bebas (tetap dicatat di jejak audit). */
-function askOperator() {
-  const punyaDaftar = OPERATOR_LIST.length > 0;
-  const body = `
-    <p class="dlg-msg">Nama Anda dicatat sebagai penanggung jawab penutupan
-      alert ini.</p>
-    <input class="dlg-input" id="dlgOpInput" type="text" autocomplete="off"
-           placeholder="${punyaDaftar ? "Cari nama..." : "Ketik nama Anda"}"
-           value="${esc(OPERATOR)}">
-    ${punyaDaftar ? `<div class="dlg-list" id="dlgOpList"></div>` : ""}
-    <p class="dlg-note" id="dlgOpNote">${punyaDaftar
-      ? `${OPERATOR_LIST.length} nama terdaftar`
-      : "Belum ada daftar operator — nama bebas, tetap dicatat."}</p>`;
-
-  return dlgOpen({
-    title: "Siapa yang menangani?",
-    body,
-    // TOMBOL SIMPAN WAJIB ADA. Dulu di sini hanya ada "Batal", dan satu-
-    // satunya cara mengirim nama adalah menekan Enter — tanpa petunjuk apa
-    // pun di layar. Tanpa daftar operator (data/operators.json tidak wajib
-    // ada), orang mengetik namanya lalu mentok: alert tidak bisa ditutup,
-    // dan tidak ada yang salah kelihatan di layar.
-    actions: [{ label: "Batal", value: null },
-              { label: "Simpan", kind: "primary", value: null }],
-    onMount: (box, selesai) => {
-      const input = box.querySelector("#dlgOpInput");
-      const list = box.querySelector("#dlgOpList");
-
-      const pilih = nama => {
-        const bersih = (nama || "").trim();
-        if (!bersih) { setText(box.querySelector("#dlgOpNote"),
-                               "Nama tidak boleh kosong."); return; }
-        if (punyaDaftar && !OPERATOR_LIST.includes(bersih)) {
-          setText(box.querySelector("#dlgOpNote"),
-                  "Pilih salah satu nama dari daftar.");
-          return;
-        }
-        operatorSimpan(bersih);
-        selesai(bersih);
-      };
-
-      const gambar = () => {
-        if (!list) return;
-        const q = input.value.trim().toLowerCase();
-        const cocok = OPERATOR_LIST.filter(n => n.toLowerCase().includes(q));
-        setHTML(list, cocok.length
-          ? cocok.map(n => `<button class="dlg-op" data-n="${esc(n)}">${
-              esc(n)}</button>`).join("")
-          : `<span class="dlg-kosong">Tidak ada nama yang cocok.</span>`);
-        list.querySelectorAll("[data-n]").forEach(b => {
-          b.onclick = () => pilih(b.dataset.n);
-        });
-      };
-
-      input.oninput = gambar;
-      input.onkeydown = e => {
-        if (e.key !== "Enter") return;
-        e.preventDefault();
-        if (!punyaDaftar) return pilih(input.value);
-        const q = input.value.trim().toLowerCase();
-        const cocok = OPERATOR_LIST.filter(n => n.toLowerCase().includes(q));
-        if (cocek1(cocok, input.value)) return;
-        // Tidak ada yang cocok, atau masih banyak pilihan. Wajib berkata
-        // sesuatu: Enter yang tidak menghasilkan apa-apa membuat operator
-        // menekannya berulang kali sambil mengira dashboard menggantung.
-        setText(box.querySelector("#dlgOpNote"), cocok.length
-          ? `${cocok.length} nama cocok — pilih salah satu dari daftar.`
-          : "Nama itu tidak ada di daftar operator.");
-      };
-
-      // pilih bila pilihannya sudah tidak ambigu
-      function cocek1(cocok, nilai) {
-        if (cocok.length === 1) { pilih(cocok[0]); return true; }
-        if (cocok.includes(nilai.trim())) { pilih(nilai); return true; }
-        return false;
-      }
-      gambar();
-
-      // Tombol "Simpan" dicegat supaya melewati pemeriksaan yang SAMA dengan
-      // Enter — nama kosong atau di luar daftar tetap ditolak, bukan lolos
-      // hanya karena dikirim lewat tombol.
-      //
-      // Tombolnya hidup di #dlgActions, bukan di dalam `box` (onMount hanya
-      // menerima badan dialog), jadi dicari dari sana.
-      const tombolSimpan = document.querySelector('#dlgActions [data-i="1"]');
-      if (tombolSimpan) {
-        tombolSimpan.onclick = () => {
-          if (!punyaDaftar) return pilih(input.value);
-          const q = input.value.trim().toLowerCase();
-          const cocok = OPERATOR_LIST.filter(n => n.toLowerCase().includes(q));
-          if (cocek1(cocok, input.value)) return;
-          setText(box.querySelector("#dlgOpNote"), cocok.length
-            ? `${cocok.length} nama cocok — pilih salah satu dari daftar.`
-            : "Nama itu tidak ada di daftar operator.");
-        };
-      }
-      input.focus();
-    },
-  });
-}
-
-async function resolveAlert(alertId, action) {
-  const by = OPERATOR || await askOperator();
-  if (!by) return;
-  try {
-    const r = await fetch(`/api/alerts/${alertId}/resolve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, by }),
-    });
-    if (r.status === 400) {
-      operatorLupakan();
-      const d = await r.json().catch(() => ({}));
-      await dlgInfo("Nama tidak dikenal",
-                    d.detail || "Nama operator tidak ada di daftar.");
-    }
-  } catch (e) { /* snapshot berikutnya akan menyusul */ }
-}
 
 /* ---------------- CATATAN DETEKSI (pengumpulan data uji) ---------------- */
 async function refreshLogCount(lineId) {
@@ -1262,16 +650,16 @@ async function clearLog() {
 /* ---------------- VIEW: MAP ---------------- */
 function renderMap() {
   const map = $("map");
-  const withAlert = ALL.filter(l => l.alert).length;
+  const withAlert = S.ALL.filter(l => l.alert).length;
   setText($("mapCount"),
-    `${ALL.length} line • ${ALL.length} kamera${withAlert ? ` • ${withAlert} alert` : ""}`);
+    `${S.ALL.length} line • ${S.ALL.length} kamera${withAlert ? ` • ${withAlert} alert` : ""}`);
 
-  const halls = HALLS.map(h => `
+  const halls = S.HALLS.map(h => `
     <div class="hall" style="left:${num(h.x)}%;top:${num(h.y)}%;width:${num(h.w)}%;height:${num(h.h)}%">
       <span class="hall-label">${esc(h.label)}</span>
     </div>`).join("");
 
-  const lines = ALL.map(l => `
+  const lines = S.ALL.map(l => `
     <div class="mline ${esc(l.status)}${l.alert ? " alerting" : ""}" data-line="${esc(l.id)}"
          style="left:${num(l.pos.x)}%;top:${num(l.pos.y)}%;width:${num(l.pos.w)}%;height:${num(l.pos.h)}%"
          title="${esc(l.name)} — ${esc(l.status_text)} — operator ${esc(l.operator)}">
@@ -1293,7 +681,7 @@ function renderMap() {
 }
 
 function patchMap() {
-  ALL.forEach(l => {
+  S.ALL.forEach(l => {
     const el = document.querySelector(`.mline[data-line="${l.id}"]`);
     if (!el) return;
     setClass(el, `mline ${l.status}${l.alert ? " alerting" : ""}`);
@@ -1304,9 +692,9 @@ function patchMap() {
       if (u) { setClass(u, `u-${m.status}`); u.title = `${m.name} — ${m.order_mo}`; }
     });
   });
-  const withAlert = ALL.filter(l => l.alert).length;
+  const withAlert = S.ALL.filter(l => l.alert).length;
   setText($("mapCount"),
-    `${ALL.length} line • ${ALL.length} kamera${withAlert ? ` • ${withAlert} alert` : ""}`);
+    `${S.ALL.length} line • ${S.ALL.length} kamera${withAlert ? ` • ${withAlert} alert` : ""}`);
 }
 
 /* ---------------- VIEW: ANALYSIS ---------------- */
@@ -1331,7 +719,7 @@ function renderAnalysis() {
   const box = $("analysis");
   const list = visibleLines();
   setText($("anaCount"),
-    `${list.length} line • ${list.length * (SUMMARY.mesin_per_line || 10)} mesin`);
+    `${list.length} line • ${list.length * (S.SUMMARY.mesin_per_line || 10)} mesin`);
 
   if (!list.length) {
     setHTML(box, `<div class="empty">Tidak ada line yang cocok.</div>`);
@@ -1432,11 +820,11 @@ function patch() {
   if (view === "camera")        patchCards();
   else if (view === "detail")   patchDetail();
   else if (view === "map")      patchMap();
-  else if (view === "analysis" && anaTab === "live") patchAnalysis();
+  else if (view === "analysis" && anaTabAktif() === "live") patchAnalysis();
 }
 
 function patchTree() {
-  ALL.forEach(l => {
+  S.ALL.forEach(l => {
     const el = document.querySelector(`.mch[data-line="${l.id}"]`);
     if (!el) return;
     setClass(el.querySelector("i"), `s-${l.status}`);
@@ -1496,20 +884,20 @@ function bindEvents() {
 
   document.addEventListener("keydown", e => {
     if (e.key !== "Escape" || view !== "detail") return;
-    if (typeof CAL !== "undefined" && CAL.on) { calClose(); return; }
+    if (CAL.on) { calClose(); return; }
     detailLine = null; setView("camera");
   });
 }
 
 /* ---------------- REFRESH SNAPSHOT (mode img) ---------------- */
 setInterval(() => {
-  if (STREAM_MODE !== "img" || !IMG_REFRESH) return;
+  if (S.STREAM_MODE !== "img" || !S.IMG_REFRESH) return;
   const stamp = Date.now();
   document.querySelectorAll(".cam img[data-refresh]").forEach(img => {
     const base = img.dataset.refresh;
     img.src = base + (base.includes("?") ? "&" : "?") + "_t=" + stamp;
   });
-}, Math.max(1, IMG_REFRESH) * 1000);
+}, Math.max(1, S.IMG_REFRESH) * 1000);
 
 /* ---------------- JAM ---------------- */
 function nowStr() { return new Date().toLocaleTimeString("id-ID", { hour12: false }); }
@@ -1527,10 +915,19 @@ setInterval(() => {
 /* ---------------- INIT ---------------- */
 async function boot() {
   temaMuat();
+  // Sambungkan modul yang butuh sesuatu dari sini. Dilakukan sekali di awal
+  // supaya tidak ada modul yang mengimpor app.js — impor melingkar membuat
+  // kedua berkas gagal dimuat, dan halaman kosong tanpa pesan yang jelas.
+  calHubungkan({
+    line: () => detailLine,
+    gambarUlang: () => { if (view === "detail") renderDetail(); },
+    diDetail: () => view === "detail",
+  });
+  laporanHubungkan(render);
   bindEvents();
   try {
     const o = await fetch("/api/operators").then(r => r.json());
-    OPERATOR_LIST = o.names || [];
+    S.OPERATOR_LIST = o.names || [];
   } catch (e) { /* daftar operator opsional */ }
   try {
     const res = await fetch("/api/lines");

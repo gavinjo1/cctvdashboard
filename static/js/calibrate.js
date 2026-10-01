@@ -1,3 +1,26 @@
+/* Kanvas kalibrasi: menggambar zona line dan kotak lampu menara di atas
+   gambar kamera, lalu menyimpannya ke server.
+
+   Modul, bukan skrip biasa: dulu berkas ini dan app.js saling memanggil
+   lewat variabel global (app.js memakai calDraw/calClose, berkas ini
+   memakai byId/esc/dlgConfirm). Sekarang keduanya menyebut apa yang
+   dipakai secara eksplisit, jadi urutan <script> tidak lagi menentukan. */
+import { esc } from "./inti.js";
+import { byId } from "./keadaan.js";
+import { dlgConfirm } from "./dialog.js";
+
+/* Dua hal dari app.js: line mana yang sedang dibuka, dan cara menggambar
+   ulang halaman detail. Disuntikkan saat boot — dulu keduanya diambil dari
+   variabel global, dijaga `typeof x !== "undefined"`. Penjagaan itu tidak
+   pernah gagal keras: kalau namanya berubah, kalibrasi diam-diam berhenti
+   bekerja tanpa satu pun pesan kesalahan. */
+let lineAktif = () => null;
+let gambarDetail = () => {};
+let sedangDetail = () => false;
+export function calHubungkan({ line, gambarUlang, diDetail }) {
+  lineAktif = line; gambarDetail = gambarUlang; sedangDetail = diDetail;
+}
+
 /* ================================================================
    Kalibrasi kamera langsung di dashboard.
 
@@ -10,7 +33,7 @@
    sama dengan ai/lamp.py; kalau salah satu diubah, ubah keduanya.
    ================================================================ */
 
-const CAL = {
+export const CAL = {
   on: false,
   mode: "zone",           // zone | lamp
   zone: [],               // [[x%, y%], ...]
@@ -133,7 +156,7 @@ function calContentRect() {
 
 /* Gambar kalibrasi TERSIMPAN saat tidak sedang mengedit, supaya hasil
    simpan langsung terlihat di feed tanpa harus membuka mode kalibrasi. */
-function calShowSaved(line) {
+export function calShowSaved(line) {
   const c = calCanvas();
   if (!c || CAL.on) return;
   const cal = (line && line.cal) || { zone: [], machines: [] };
@@ -174,7 +197,7 @@ function calShowSaved(line) {
   });
 }
 
-function calDraw() {
+export function calDraw() {
   const c = calCanvas();
   if (!c || c.hidden) return;
   calResize();
@@ -364,7 +387,7 @@ function calOpen(line) {
   document.getElementById("calToggle").classList.add("on");
 }
 
-function calClose() {
+export function calClose() {
   CAL.on = false;
   CAL.drag = null;
   const bar = document.getElementById("calBar");
@@ -378,8 +401,8 @@ function calClose() {
   const t = document.getElementById("calToggle");
   if (t) t.classList.remove("on");
   // langsung tampilkan kembali kalibrasi tersimpan
-  if (typeof detailLine !== "undefined" && typeof byId === "function") {
-    calShowSaved(byId(detailLine));
+  if (lineAktif()) {
+    calShowSaved(byId(lineAktif()));
   }
 }
 
@@ -412,17 +435,17 @@ async function calSave() {
     }
     const line = byId(CAL.lineId);
     if (line) line.cal = { zone: body.zone, machines: body.machines };
-    if (typeof renderDetail === "function") renderDetail();
+    gambarDetail();
     calMsg(`Tersimpan — ${body.zone.length} titik zona, ${body.machines.length} lampu`, true);
   } catch (e) {
     calMsg("Gagal menghubungi server", false);
   }
 }
 
-function calBindControls() {
+export function calBindControls() {
   document.getElementById("calToggle").onclick = () => {
     if (CAL.on) { calClose(); return; }
-    const l = byId(detailLine);
+    const l = byId(lineAktif());
     if (l) calOpen(l);
   };
   document.getElementById("calZone").onclick = () => calSetMode("zone");
@@ -460,7 +483,7 @@ function calBindControls() {
       CAL.zone = []; CAL.lamps = [];
       if (line) line.cal = { zone: [], machines: [] };
       calDraw();
-      if (typeof renderDetail === "function") renderDetail();
+      gambarDetail();
       calMsg(`Kalibrasi ${nama} dihapus`, true);
     } catch (e) {
       calMsg("Gagal menghubungi server", false);
@@ -486,9 +509,9 @@ function calBindControls() {
 /* gambar ulang mengikuti frame kamera yang menyegar tiap detik */
 setInterval(() => {
   if (CAL.on) calDraw();
-  else if (typeof view !== "undefined" && view === "detail") calShowSaved(byId(detailLine));
+  else if (sedangDetail()) calShowSaved(byId(lineAktif()));
 }, 1000);
 window.addEventListener("resize", () => {
   if (CAL.on) calDraw();
-  else if (typeof view !== "undefined" && view === "detail") calShowSaved(byId(detailLine));
+  else if (sedangDetail()) calShowSaved(byId(lineAktif()));
 });

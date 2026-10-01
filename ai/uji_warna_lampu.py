@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import cv2                                           # noqa: E402
 import numpy as np                                   # noqa: E402
-from lamp import PembacaMenara, read_tower, warna_segmen   # noqa: E402
+from lamp import (PembacaMenara, read_tower, sekeluarga,   # noqa: E402
+                  warna_segmen)
 
 FOTO = Path(__file__).resolve().parent / "foto"
 
@@ -46,6 +47,55 @@ def ambil(berkas, detik):
         f = bingkai                 # pembacaan kedua gagal dan frame pertama
     cap.release()                   # yang sudah benar ikut hilang
     return f
+
+
+#: Hue yang BENAR-BENAR diukur dari foto menara pabrik ini, bukan dikarang.
+#: (hue OpenCV, warna yang benar, asalnya)
+HUE_PABRIK = [
+    (5.3, "merah", "ajl-02"), (9.4, "merah", "ajl-04"),
+    (10.0, "merah", "ajl-03"), (179.7, "merah", "vid3"),
+    (18.6, "oranye", "ajl-01"), (21.2, "oranye", "ajl-03"),
+    (21.3, "oranye", "ajl-04"),
+    (75.9, "hijau", "ajl-01"), (86.6, "hijau", "ajl-02"),
+]
+
+
+def _petak(hue, sat=170, val=235, n=40):
+    hsv = np.zeros((n, n, 3), np.uint8)
+    hsv[:, :, 0] = int(round(hue))
+    hsv[:, :, 1] = sat
+    hsv[:, :, 2] = val
+    return hsv
+
+
+def uji_hue_pabrik():
+    """Tiap rumpun hue dari foto pabrik harus jatuh di warna yang benar.
+
+    Merah melintasi titik nol (5-10 DAN 177-180), jadi kasus 179,7 itu
+    penjaga khusus: rata-rata hue biasa akan menaruhnya di cyan.
+    """
+    lolos = True
+    for hue, benar, asal in HUE_PABRIK:
+        w, _ = warna_segmen(_petak(hue), 235)
+        ok = w == benar
+        lolos &= ok
+        print("  [%s] hue %-6.1f -> %-7s (benar %s, dari %s)"
+              % ("ok  " if ok else "GAGAL", hue, w, benar, asal))
+
+    # Amber redup terlihat kecoklatan di mata, tetapi hue-nya tetap oranye.
+    w, _ = warna_segmen(_petak(19, 180, 110), 110)
+    ok = w == "oranye"
+    lolos &= ok
+    print("  [%s] amber redup (V=110, tampak coklat) -> %s"
+          % ("ok  " if ok else "GAGAL", w))
+
+    # Oranye dan kuning = mika yang sama; memisahkannya tidak boleh
+    # melahirkan peringatan "WARNA TIDAK COCOK" palsu.
+    ok = sekeluarga("oranye", "kuning") and not sekeluarga("oranye", "merah")
+    lolos &= ok
+    print("  [%s] oranye sekeluarga dengan kuning, bukan dengan merah"
+          % ("ok  " if ok else "GAGAL"))
+    return lolos
 
 
 def uji_kedip():
@@ -101,6 +151,10 @@ def main():
         print("  [%s] %-34s -> %-6s (yakin %.2f, benar %s)"
               % ("ok  " if ok else "GAGAL", nama, warna, yakin, benar))
 
+    print("\nuji_hue_pabrik")
+    hasil.append(uji_hue_pabrik())
+
+    print("\nuji_kedip")
     k = uji_kedip()
     if k is not None:
         hasil.append(k)

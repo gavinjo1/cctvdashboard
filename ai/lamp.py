@@ -142,12 +142,44 @@ def _ukur(frame, roi):
 
 #: Batas hue OpenCV (0-179, jadi setengah derajat) per warna menara.
 #: Merah melintasi titik nol, karena itu ditulis sebagai dua rentang.
+#:
+#: Batas di bawah DIUKUR dari foto menara pabrik ini, bukan dari teori
+#: warna. Tiga rumpun yang benar-benar muncul:
+#:
+#:     hue 177-180 & 5-10   merah   (ajl-02/03/04, vid3)
+#:     hue 18,6 - 21,3      oranye  (ajl-01/03/04) — amber, agak kecoklatan
+#:     hue 75,9 - 86,6      hijau   (ajl-01/02/03, vid10)
+#:
+#: Pita dibuat BERSAMBUNG tanpa celah. Versi sebelumnya punya lubang di
+#: 12-14 dan 135-168: hue yang jatuh di situ mengembalikan None, dan
+#: segmen yang jelas menyala terbaca "tidak diketahui warnanya".
 PITA_WARNA = (
-    ("merah",  ((0, 12), (168, 180))),
-    ("kuning", ((14, 35),)),
-    ("hijau",  ((35, 92),)),
-    ("biru",   ((92, 135),)),
+    ("merah",  ((0, 13), (168, 180))),
+    ("oranye", ((13, 26),)),
+    ("kuning", ((26, 36),)),
+    ("hijau",  ((36, 92),)),
+    ("biru",   ((92, 140),)),
+    ("ungu",   ((140, 168),)),
 )
+
+#: Warna yang boleh dianggap SAMA saat memeriksa kotak menara.
+#:
+#: Mika amber terbaca "oranye" atau "kuning" tergantung tebal mika, umur
+#: lampu, dan white balance kamera — hue 18 dan 28 itu lampu yang sama.
+#: Tanpa peta ini, memisahkan oranye dari kuning akan melahirkan peringatan
+#: "WARNA TIDAK COCOK" palsu di tiap kamera, dan peringatan palsu yang
+#: banyak membuat orang berhenti membacanya.
+KELUARGA_WARNA = {
+    "oranye": "kuning",
+    "amber": "kuning",
+}
+
+
+def sekeluarga(a, b) -> bool:
+    """True kalau dua nama warna menunjuk mika yang sama."""
+    if not a or not b:
+        return False
+    return KELUARGA_WARNA.get(a, a) == KELUARGA_WARNA.get(b, b)
 
 #: Ambang pada PERSENTIL KE-90 SATURASI, bukan pada rata-rata. Di bawah ini
 #: lampu disebut PUTIH. Terukur pada rekaman pabrik:
@@ -314,7 +346,7 @@ class PembacaMenara:
             cocok = None
             if warna and self.warna_harapan:
                 harap = self.warna_harapan[i]
-                cocok = (warna == harap) if harap else None
+                cocok = sekeluarga(warna, harap) if harap else None
 
             hasil.append({
                 "no": self.no,

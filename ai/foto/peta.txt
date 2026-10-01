@@ -16,9 +16,9 @@ ajl-04 = vid5.mp4          # 848x478   28 s
 ajl-05 = vid6.mp4          # 848x478   43 s
 ajl-06 = vid7.mp4          # PORTRAIT 478x850, 31 s
 
-ajl-07 = vid1.mp4          # 832x464   74 s
-ajl-08 = vid2.mp4          # 832x464  601 s
-ajl-09 = vid3.jpeg         # foto diam — MENARA MERAH menyala
+#ajl-07 = vid1.mp4          # 832x464   74 s
+#ajl-08 = vid2.mp4          # 832x464  601 s
+#ajl-09 = vid3.jpeg         # foto diam — MENARA MERAH menyala
 #ajl-10 = vid4.mp4
 #ajl-11 = vid5.mp4
 #ajl-12 = vid6.mp4

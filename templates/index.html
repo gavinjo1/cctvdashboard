@@ -278,7 +278,10 @@
 </div><!-- /.main -->
 </div><!-- /.app -->
 
-<script src="{{ url_for('static', path='/js/calibrate.js') }}?v={{ v }}"></script>
-<script src="{{ url_for('static', path='/js/app.js') }}?v={{ v }}"></script>
+{# Satu titik masuk. app.js mengimpor sisanya (inti, dialog, tema,
+   operator, laporan, portal MO, kalibrasi) — urutan tidak lagi ditentukan
+   urutan <script>, melainkan oleh impor di berkasnya masing-masing.
+   type="module" berarti tanpa build step: peramban yang menyusunnya. #}
+<script type="module" src="{{ url_for('static', path='/js/app.js') }}?v={{ v }}"></script>
 </body>
 </html>
